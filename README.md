@@ -1,6 +1,11 @@
 # mrnes
-Multi-resolution Network Emulator/Simulator
 
+Parse command-line args
 
-Copyright 2024 The Board of Trustees of the University of Illinois. All Rights Reserved.
-See [LICENSE](LICENSE) for details.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+Package `mrnes` provides a 'netsim' library for building network topologies for running Multi-Resolution-Network Emulation-Simulation models.
+
+Copyright 2024 Board of Trustees of the University of Illinois.
+See [the license](LICENSE) for details.
+
