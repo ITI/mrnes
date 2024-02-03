@@ -174,6 +174,14 @@ func nxtFlowId() int {
 	return flowId
 }
 
+type TraceRecord struct {
+	time float64
+	ticks int64
+	priority int64
+	flowId int
+	objType string		// host, switch, router
+}	
+
 // the topDev interface specifies the functionality different device types provide
 type topoDev interface {
 	devName() string              // every device has a unique name
