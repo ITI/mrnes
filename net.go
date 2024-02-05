@@ -4,27 +4,39 @@ package mrnes
 // simulation of traffic through the communication network.
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/iti/evt/evtm"
 	"github.com/iti/evt/vrtime"
 	"github.com/iti/rngstream"
+	"gopkg.in/yaml.v3"
 	"math"
+	"os"
+	"path"
 	"strings"
 )
 
+// a rtnRecord saves the event handling function to call when the network simulation
+// pushes a message back into the application layer
 type rtnRecord struct {
 	count   int
 	rtnFunc evtm.EventHandlerFunction
 	rtnCxt  any
 }
 
+// a NetworkPortal implements the mrnesbits interface used to pass
+// traffice between the application layer and the network sim
 type NetworkPortal struct {
 	QkNetSim bool
 	returnTo map[int]*rtnRecord
 }
 
+// activePortal remembers the most recent NetworkPortal created
+// (there should be only one call to CreateNetworkPortal...)
 var activePortal *NetworkPortal
 
+// CreateNetworkPortal is a constructor, passed a flag indicating which
+// of two network simulation modes to use, and writes the NetworkPortal pointer into a global variable
 func CreateNetworkPortal(qksim bool) *NetworkPortal {
 	if activePortal != nil {
 		return activePortal
@@ -38,23 +50,151 @@ func CreateNetworkPortal(qksim bool) *NetworkPortal {
 	return np
 }
 
+// HostCPU helps NetworkPortal implement the mrnesbits NetworkPortal interface,
+// returning the CPU type associated with a named host.  Present because the
+// application layer does not otherwise have visibility into the network topology
 func (np *NetworkPortal) HostCPU(hostname string) string {
 	host := hostDevByName[hostname]
 	return host.hostState.hostCPU
 }
 
-func (np *NetworkPortal) Depart(flowId int) {
+// Depart is called to return an application message being carried through
+// the network back to the application layer
+func (np *NetworkPortal) Depart(evtMgr *evtm.EventManager, nm networkMsgEdge) {
+	flowId := nm.flowId
 	np.returnTo[flowId].count -= 1
+
+	rtnRec := np.returnTo[flowId]
+	rtnCxt := rtnRec.rtnCxt
+	rtnFunc := rtnRec.rtnFunc
+
+	// schedule the re-integration into the application simulator
+	evtMgr.Schedule(rtnCxt, nm.msg, rtnFunc, vrtime.SecondsToTime(0.0))
 	if np.returnTo[flowId].count == 0 {
 		delete(np.returnTo, flowId)
 	}
 }
 
+// Arrive is called at the point an application message is received by the network
+// and a new flowId is created to track it.  It saves information needed to re-integrate
+// the application message into the application layer when the message arrives at its destination
 func (np *NetworkPortal) Arrive(flowId int, rtnCxt any, rtnFunc evtm.EventHandlerFunction) {
-	rtnRec := &rtnRecord{count:1, rtnFunc: rtnFunc, rtnCxt: rtnCxt}
+	rtnRec := &rtnRecord{count: 1, rtnFunc: rtnFunc, rtnCxt: rtnCxt}
 	np.returnTo[flowId] = rtnRec
 }
 
+// a TraceRecord saves information about the visitation of a message to some point in the simulation.
+// saved for post-run analysis
+type TraceRecord struct {
+	Time     float64 // time in float64
+	Ticks    int64   // ticks variable of time
+	Priority int64   // priority field of time-stamp
+	ExecId   int     // integer identifier identifying the chain of traces this is part of
+	FlowId   int     // integer identifier of the network flow
+	ObjId    int     // integer id for object being referenced
+	ObjType  string  // "host", "switch", "interface", "router"
+	ObjEntry bool    // true if the recorded trace is entering an object
+	MsgEntry bool    // true if the trace is the leading edge of the message, false otherwise
+	Rate     float64 // rate associated with the flow
+}
+
+// NameType is a an entry in a dictionary created for a trace
+// that maps object id numbers to a (name,type) pair
+type NameType struct {
+	Name string
+	Type string
+}
+
+// TraceManger implements the mrnesbits TraceManager interface. It is
+// use to gather information about a simulation model and an execution of that model
+type TraceManager struct {
+	InUse    bool                  // experiment uses trace
+	ExpName  string                // name of experiment
+	NameById map[int]NameType      // text name associated with each objId
+	Traces   map[int][]TraceRecord // all trace records for this experiment
+}
+
+// CreateTraceManager is a constructor.  It saves the name of the experiment
+// and a flag indicating whether the trace manager is active.  By testing this
+// flag we can inhibit the activity of gathering a trace when we don't want it,
+// while embedding calls to its methods everywhere we need them when it is
+func CreateTraceManager(ExpName string, active bool) *TraceManager {
+	tm := new(TraceManager)
+	tm.InUse = active
+	tm.ExpName = ExpName
+	tm.NameById = make(map[int]NameType)    // dictionary of id code -> (name,type)
+	tm.Traces = make(map[int][]TraceRecord) // traces have 'execution' origins, are saved by index to these
+	return tm
+}
+
+// Active tells the caller whether the Trace Manager is activelyl being used
+func (tm *TraceManager) Active() bool {
+	return tm.InUse
+}
+
+// AddTrace creates a record of the trace using its calling arguments, and stores it
+func (tm *TraceManager) AddTrace(vrt vrtime.Time, execId, flowId, objId int, objType string,
+	objEntry, msgEntry bool, rate float64) {
+
+	// return if we aren't using the trace manager
+	if !tm.InUse {
+		return
+	}
+
+	if execId == 0 {
+		fmt.Println("execId is zero")
+	}
+
+	// initialize the slice for this execution id, if needed
+	_, present := tm.Traces[execId]
+	if !present {
+		tm.Traces[execId] = make([]TraceRecord, 0)
+	}
+
+	// create and add the trace record
+	vmr := TraceRecord{Time: vrt.Seconds(), Ticks: vrt.Ticks(), Priority: vrt.Pri(), FlowId: flowId,
+		ExecId: execId, ObjType: objType, ObjId: objId, ObjEntry: objEntry, MsgEntry: msgEntry, Rate: rate}
+	tm.Traces[execId] = append(tm.Traces[execId], vmr)
+}
+
+// AddName is used to add an element to the id -> (name,type) dictionary for the trace file
+func (tm *TraceManager) AddName(id int, name string, objType string) {
+	if tm.InUse {
+		tm.NameById[id] = NameType{Name: name, Type: objType}
+	}
+}
+
+// WriteToFile stores the Traces struct to the file whose name is given.
+// Serialization to json or to yaml is selected based on the extension of this name.
+func (tm *TraceManager) WriteToFile(filename string) bool {
+	if !tm.InUse {
+		return false
+	}
+	pathExt := path.Ext(filename)
+	var bytes []byte
+	var merr error = nil
+
+	if pathExt == ".yaml" || pathExt == ".YAML" || pathExt == ".yml" {
+		bytes, merr = yaml.Marshal(*tm)
+	} else if pathExt == ".json" || pathExt == ".JSON" {
+		bytes, merr = json.MarshalIndent(*tm, "", "\t")
+	}
+
+	if merr != nil {
+		panic(merr)
+	}
+
+	f, cerr := os.Create(filename)
+	if cerr != nil {
+		panic(cerr)
+	}
+	_, werr := f.WriteString(string(bytes[:]))
+	if werr != nil {
+		panic(werr)
+	}
+	f.Close()
+	return true
+}
 
 // devCode is the base type for an enumerated type of network devices
 type devCode int
@@ -174,14 +314,6 @@ func nxtFlowId() int {
 	return flowId
 }
 
-type TraceRecord struct {
-	time float64
-	ticks int64
-	priority int64
-	flowId int
-	objType string		// host, switch, router
-}	
-
 // the topDev interface specifies the functionality different device types provide
 type topoDev interface {
 	devName() string              // every device has a unique name
@@ -201,6 +333,7 @@ type paramObj interface {
 	matchParam(string) bool
 	setParam(string, valueStruct)
 	paramObjName() string
+	LogNetEvent(vrtime.Time, int, int, bool, bool, float64)
 }
 
 // The intrfcStruct holds information about a network interface embedded in a device
@@ -210,6 +343,7 @@ type intrfcStruct struct {
 	devType  devCode        // device code of the device holding the interface
 	media    networkMedia   // media of the network the interface interacts with
 	device   topoDev        // pointer to the device holding the interface
+	prmDev   paramObj       // pointer to the device holding the interface as a paramObj
 	connects *intrfcStruct  // For a wired interface, points to the "other" interface in the connection
 	faces    *networkStruct // pointer to the network the interface interacts with
 	state    *intrfcState   // pointer to the interface's block of state information
@@ -221,6 +355,7 @@ type intrfcState struct {
 	bufferSize float64         // buffer capacity (in Mbytes)
 	latency    float64         // time the leading bit takes to traverse the interface
 	pcktSize   int             // maximum packet size
+	trace      bool            // switch for calling add trace
 	active     map[int]float64 // id of a flow actively passing through the interface, and its bandwidth
 }
 
@@ -231,6 +366,7 @@ func createIntrfcState() *intrfcState {
 	iss.latency = 1e+6   // in seconds!  Set this way so that if not initialized we'll notice
 	iss.pcktSize = 1500  // in bytes Set for Ethernet2 MTU, should change if wireless
 	iss.active = make(map[int]float64)
+	iss.trace = false
 	return iss
 }
 
@@ -258,6 +394,7 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 	// We can use this to look up the locally constructed representation of the device
 	// and save a pointer to it
 	is.device = topoDevByName[intrfc.Device]
+	is.prmDev = paramObjByName[intrfc.Device]
 
 	// desc representation codes the media type as a string
 	switch intrfc.MediaType {
@@ -317,7 +454,16 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 	case "packetSize":
 		// number of bytes in maximally sized packet
 		intrfc.state.pcktSize = value.intValue
+	case "trace":
+		intrfc.state.trace = value.boolValue
 	}
+}
+
+func (intrfc *intrfcStruct) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+	if !intrfc.state.trace {
+		return
+	}
+	devTraceMgr.AddTrace(time, execId, flowId, intrfc.number, "interface", objEntry, msgEntry, rate)
 }
 
 // paramObjName helps intrfcStruct satisfy paramObj interface, returns interface name
@@ -359,6 +505,7 @@ type networkState struct {
 	latency float64         // latency through network (without considering explicitly declared wired connections) under no load
 	load    float64         // real-time value of total load (in units of Mbytes/sec)
 	bndwdth float64         // maximum bandwidth between any two routers in network
+	trace   bool            // switch for calling trace saving
 	active  map[int]float64 // keep track of flows through the network
 }
 
@@ -452,12 +599,22 @@ func (ns *networkStruct) setParam(paramType string, value valueStruct) {
 		ns.netState.latency = fltValue
 	case "bandwidth", "Bandwidth", "bndwdth":
 		ns.netState.bndwdth = fltValue
+	case "trace":
+		ns.netState.trace = value.boolValue
 	}
 }
 
 // paramObjName helps networkStruct satisfy paramObj interface, returns network name
 func (ns *networkStruct) paramObjName() string {
 	return ns.name
+}
+
+func (ns *networkStruct) LogNetEvent(time vrtime.Time, execId int, flowId int,
+	objEntry, msgEntry bool, rate float64) {
+	if !ns.netState.trace {
+		return
+	}
+	devTraceMgr.AddTrace(time, execId, flowId, ns.number, "network", objEntry, msgEntry, rate)
 }
 
 // addRouter includes the router given as input parameter on the network list of routers that face it
@@ -515,6 +672,7 @@ type hostDev struct {
 type hostDevState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	hostCPU string               // type of CPU the host uses
+	trace   bool                 // switch for calling add trace
 	active  map[int]float64
 }
 
@@ -532,6 +690,9 @@ func (host *hostDev) setParam(param string, value valueStruct) {
 	if param == "CPU" || param == "cpu" {
 		host.hostState.hostCPU = value.stringValue
 	}
+	if param == "trace" {
+		host.hostState.trace = value.boolValue
+	}
 }
 
 // paramObjName helps hostDev satisfy paramObj interface, returns the host's name
@@ -548,6 +709,7 @@ func createHostDev(hostDesc *HostDesc) *hostDev {
 	host.hostIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
 	host.hostState = new(hostDevState)          // creation of state block, to be augmented later
 	host.hostState.active = make(map[int]float64)
+	host.hostState.trace = false
 	return host
 }
 
@@ -593,6 +755,13 @@ func (host *hostDev) devState() any {
 	return host.hostState
 }
 
+func (host *hostDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+	if !host.hostState.trace {
+		return
+	}
+	devTraceMgr.AddTrace(time, execId, flowId, host.hostId, "host", objEntry, msgEntry, rate)
+}
+
 // devAddActive adds an active flow, as part of the topoDev interface.  Not used for hosts, yet
 func (host *hostDev) devAddActive(nme *networkMsgEdge) {
 	host.hostState.active[nme.flowId] = nme.rate
@@ -603,7 +772,7 @@ func (host *hostDev) devRmActive(flowId int) {
 	delete(host.hostState.active, flowId)
 }
 
-// devDelay returns the state-dependend delay for passage through the device, as part of the topoDev interface.
+// devDelay returns the state-dependent delay for passage through the device, as part of the topoDev interface.
 // Not really applicable to host, so zero is returned
 func (host *hostDev) devDelay(arg any) float64 {
 	return 0.0
@@ -622,6 +791,7 @@ type switchDev struct {
 type switchDevState struct {
 	execTime float64 // nominal time for a packet to pass through the switch, in seconds
 	buffer   float64 // buffer capacity within switch, in Mbytes
+	trace    bool    // switch for calling trace saving
 	active   map[int]float64
 }
 
@@ -634,6 +804,7 @@ func createSwitchDev(switchDesc *SwitchDesc) *switchDev {
 	swtch.switchIntrfcs = make([]*intrfcStruct, 0)
 	swtch.switchState = new(switchDevState)
 	swtch.switchState.active = make(map[int]float64)
+	swtch.switchState.trace = false
 	return swtch
 }
 
@@ -657,6 +828,8 @@ func (swtch *switchDev) setParam(param string, value valueStruct) {
 		swtch.switchState.execTime = value.floatValue
 	case "buffer":
 		swtch.switchState.buffer = value.floatValue
+	case "trace":
+		swtch.switchState.trace = value.boolValue
 	}
 }
 
@@ -713,6 +886,14 @@ func (swtch *switchDev) devDelay(msg any) float64 {
 	return delay
 }
 
+// LogNetEvent satisfies topoDev interface
+func (swtch *switchDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+	if !swtch.switchState.trace {
+		return
+	}
+	devTraceMgr.AddTrace(time, execId, flowId, swtch.switchId, "switch", objEntry, msgEntry, rate)
+}
+
 // The routerDev struct holds information describing a run-time representation of a router
 type routerDev struct {
 	routerName      string          // unique name
@@ -720,13 +901,14 @@ type routerDev struct {
 	routerId        int             // unique integer id assigned at model-load time
 	routerBrdcstDmn string          // only when the router is used as a wireless hub for a BCD, its name
 	routerIntrfcs   []*intrfcStruct // list of interfaces embedded in the router
-	routerState     *routerDevState // pointer to the struct of the routers auxiliary state
+	routerState     *routerState    // pointer to the struct of the routers auxiliary state
 }
 
-// The routerDevState type describes auxiliary information about the router
-type routerDevState struct {
+// The routerState type describes auxiliary information about the router
+type routerState struct {
 	buffer   float64 // volume of traffic that can be buffered, expressed in Mbytes
 	execTime float64 // nominal time for a packet to transit the router
+	trace    bool    // switch for calling trace saving
 	active   map[int]float64
 }
 
@@ -738,9 +920,9 @@ func createRouterDev(routerDesc *RouterDesc) *routerDev {
 	router.routerId = nxtId()
 	router.routerIntrfcs = make([]*intrfcStruct, 0)
 	router.routerBrdcstDmn = routerDesc.BrdcstDmn // non-empty string only when router is hub for BCD
-	router.routerState = new(routerDevState)
+	router.routerState = new(routerState)
 	router.routerState.active = make(map[int]float64)
-
+	router.routerState.trace = false
 	return router
 }
 
@@ -764,6 +946,8 @@ func (router *routerDev) setParam(param string, value valueStruct) {
 		router.routerState.execTime = value.floatValue
 	case "buffer", "Buffer":
 		router.routerState.buffer = value.floatValue
+	case "trace":
+		router.routerState.trace = value.boolValue
 	}
 }
 
@@ -802,6 +986,13 @@ func (router *routerDev) devState() any {
 	return router.routerState
 }
 
+func (rtr *routerDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+	if !rtr.routerState.trace {
+		return
+	}
+	devTraceMgr.AddTrace(time, execId, flowId, rtr.routerId, "router", objEntry, msgEntry, rate)
+}
+
 // devAddActive includes a flowId as part of what is active at the device, as part of the topoDev interface
 func (router *routerDev) devAddActive(nme *networkMsgEdge) {
 	router.routerState.active[nme.flowId] = nme.rate
@@ -838,6 +1029,7 @@ type networkMsgEdge struct {
 	stepIdx int             // position within the route from source to destination
 	route   *[]intrfcsToDev // pointer to description of route
 	flowId  int             // flow identifier
+	execId  int             // execution id given by app at entry
 	rate    float64         // effective bandwidth for message
 	bit     int             // bit number
 	msgLen  int             // length of the entire message, in Mbytes
@@ -933,7 +1125,7 @@ func transitDelay(nm *networkMsgEdge) (float64, *networkStruct) {
 // schedules their arrival to the egress interface of the message source host
 // func enterNetwork(evtMgr *evtm.EventManager, cpf cmpPtnFunc, cpm *cmpPtnMsg) any {
 func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcHost, dstHost string, msgLen int,
-	rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction) any {
+	execId int, rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction) any {
 
 	srcId := hostDevByName[srcHost].hostId
 	dstId := hostDevByName[dstHost].hostId
@@ -966,8 +1158,8 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcHost, dstHos
 		delay := latency + (float64(msgLen)/1e6)/bndwdth
 
 		// data structure that describes the message, noting that the 'edge' is the last bit
-		trailingEdge := networkMsgEdge{stepIdx: len(*route) - 1, route: route, rate: bndwdth, msgLen:msgLen, bit: msgLen*8 - 1,
-			end: true, flowId: flowId, msg: msg}
+		trailingEdge := networkMsgEdge{stepIdx: len(*route) - 1, route: route, rate: bndwdth, msgLen: msgLen, bit: msgLen*8 - 1,
+			end: true, flowId: flowId, execId: execId, msg: msg}
 
 		// The destination interface of the last routing step is where the message ultimately emerges from the network.
 		// That's the 'context' for the event-handler which deals with this data structure just as though it came off
@@ -986,8 +1178,8 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcHost, dstHos
 	// No quick network simulation, so make a message wrapper and push the message at the entry
 	// of the host's egress interface
 
-	leadingEdge := networkMsgEdge{stepIdx: 0, route: route, rate: bndwdth, end: false, bit:0, msgLen:msgLen,
-		flowId: flowId, msg: msg}
+	leadingEdge := networkMsgEdge{stepIdx: 0, route: route, rate: bndwdth, end: false, bit: 0, msgLen: msgLen,
+		flowId: flowId, execId: execId, msg: msg}
 
 	// get identity of egress interface
 	intrfc := intrfcById[(*route)[0].srcIntrfcId]
@@ -1003,7 +1195,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcHost, dstHos
 	// a pipe whose rate is that of 'bndwdth' computed above...the minimum bandwidth across all interfaces, networks, and
 	// wired connections on the route the message takes.
 	trailingEdge := networkMsgEdge{stepIdx: 0, route: route, rate: bndwdth, bit: msgLen*8 - 1, end: true,
-		flowId: flowId, msg: msg}
+		flowId: flowId, execId: execId, msg: msg}
 
 	// schedule the entry of the trailing networkMsgEdge into the first egress interface (from the source host)
 	evtMgr.Schedule(intrfc, trailingEdge, enterEgressIntrfc, vrtime.SecondsToTime(delay))
@@ -1029,6 +1221,8 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 		thisDev.devRmActive(nm.flowId)
 	}
 
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
+
 	// get latency through interface
 	delay := intrfc.state.latency
 
@@ -1048,6 +1242,8 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any {
 	intrfc := egressIntrfc.(*intrfcStruct)
 	nm := msg.(networkMsgEdge)
+
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, !nm.end, nm.rate)
 
 	// transitDelay will differentiate between point-to-point wired connection and passage through a network
 	netDelay, net := transitDelay(&nm)
@@ -1086,6 +1282,8 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	// cast data argument to network message
 	nm := msg.(networkMsgEdge)
 
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
+
 	// if this is the trailing edge and we have just left a network unmark the flow
 	if nm.end && intrfc.faces != nil {
 		rate, present := intrfc.faces.netState.active[nm.flowId]
@@ -1117,12 +1315,16 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 	intrfc := ingressIntrfc.(*intrfcStruct)
 	nm := msg.(networkMsgEdge)
 
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, !nm.end, nm.rate)
+
 	// if it's the last bit take the flow off the active list
 
 	_, present := intrfc.state.active[nm.flowId]
 	if present {
 		delete(intrfc.state.active, nm.flowId)
 	}
+
+	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
 
 	// check whether the device is a host, in which case leave the network if this is the last bit
 	if intrfc.device.devType() == hostCode {
@@ -1132,14 +1334,7 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 			return nil
 		}
 		// schedule return, where requested
-		rtnRec := activePortal.returnTo[nm.flowId]
-		rtnCxt := rtnRec.rtnCxt
-		rtnFunc := rtnRec.rtnFunc
-		activePortal.Depart(nm.flowId)
-
-		// schedule the re-integration into the application simulator
-		evtMgr.Schedule(rtnCxt, nm.msg, rtnFunc, vrtime.SecondsToTime(0.0))
-
+		activePortal.Depart(evtMgr, nm)
 		return nil
 	}
 
@@ -1154,7 +1349,9 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 	// advance position along route
 	nm.stepIdx += 1
 	nxtIntrfc := intrfcById[(*nm.route)[nm.stepIdx].srcIntrfcId]
-	evtMgr.Schedule(nxtIntrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
+	_, nxtTime := evtMgr.Schedule(nxtIntrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
+
+	intrfc.prmDev.LogNetEvent(nxtTime, nm.execId, nm.flowId, false, !nm.end, nm.rate)
 
 	// event scheduler has to return _something_
 	return nil

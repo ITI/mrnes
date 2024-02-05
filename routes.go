@@ -205,7 +205,7 @@ type rtEndpts struct {
 func networkBetween(devA, devB topoDev) string {
 	facedByA := []string{}
 
-	if devB.devName()=="decrypt-host" && devA.devName()=="dstBcd.Hub" {
+	if devB.devName() == "decrypt-host" && devA.devName() == "dstBcd.Hub" {
 		fmt.Println("here we are")
 	}
 
@@ -287,7 +287,7 @@ func findRoute(srcId, dstId int) *[]intrfcsToDev {
 
 	for idx := 1; idx < len(route); idx++ {
 		devId := route[idx]
-		
+
 		srcIntrfcId, dstIntrfcId := intrfcsBetween(route[idx-1], devId)
 
 		networkId := -1

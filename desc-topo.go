@@ -247,7 +247,7 @@ func CreateIntrfcFrame(device, name, devType, mediaType, faces string) *IntrfcFr
 	for _, stored := range net.Routers {
 		if rtr.Name == stored.Name {
 			duplicated = true
-			
+
 			break
 		}
 	}
@@ -1006,12 +1006,12 @@ func (bcdf *BroadcastDomainFrame) AddHost(host *HostFrame) {
 
 	// if the BCD is wired connect the host to the hub
 	if bcdf.MediaType == "wired" {
-		err := ConnectDevs(bcdf.SwitchHub, host, bcdf.Network) 
+		err := ConnectDevs(bcdf.SwitchHub, host, bcdf.Network)
 		if err != nil {
 			panic(err)
 		}
 	} else {
-		err := ConnectDevs(bcdf.RouterHub, host, bcdf.Network) 
+		err := ConnectDevs(bcdf.RouterHub, host, bcdf.Network)
 		if err != nil {
 			panic(err)
 		}
@@ -1495,6 +1495,10 @@ type ExpCfg struct {
 	Parameters []ExpParameter `json:"parameters" yaml:"parameters"`
 }
 
+func (excg *ExpCfg) AddExpParameter(exparam *ExpParameter) {
+	excg.Parameters = append(excg.Parameters, *exparam)
+}
+
 // An ExpCfgDict is a dictionary that holds [ExpCfg] objects in a map indexed by their Name.
 type ExpCfgDict struct {
 	DictName string            `json:"dictname" yaml:"dictname"`
@@ -1742,11 +1746,11 @@ func GetExpParamDesc() ([]string, map[string][]string, map[string][]string) {
 		ExpAttributes["Interface"] = []string{"Switch", "Host", "Router", "wired", "wireless", "*"}
 		ExpAttributes["Network"] = []string{"wired", "wireless", "LAN", "WAN", "T3", "T2", "T1", "*"}
 		ExpParams = make(map[string][]string)
-		ExpParams["Switch"] = []string{"execTime", "buffer"}
-		ExpParams["Route"] = []string{"execTime", "buffer"}
-		ExpParams["Host"] = []string{"CPU"}
-		ExpParams["Network"] = []string{"media", "latency", "bandwidth", "capacity"}
-		ExpParams["Interface"] = []string{"media", "latency", "bandwidth", "packetSize"}
+		ExpParams["Switch"] = []string{"execTime", "buffer", "trace"}
+		ExpParams["Route"] = []string{"execTime", "buffer", "trace"}
+		ExpParams["Host"] = []string{"CPU", "trace"}
+		ExpParams["Network"] = []string{"media", "latency", "bandwidth", "capacity", "trace"}
+		ExpParams["Interface"] = []string{"media", "latency", "bandwidth", "packetSize", "trace"}
 	}
 
 	return ExpParamObjs, ExpAttributes, ExpParams

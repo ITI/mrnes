@@ -65,10 +65,12 @@ func buildDevExecTimeTbl(detl *DevExecList) map[string]map[string]float64 {
 	return det
 }
 
+var devTraceMgr *TraceManager
+
 // BuildExperimentNet is called from the module that creates and runs
 // a simulation. Its inputs identify the names of input files, which it
 // uses to assemble and initialize the model (and experiment) data structures.
-func BuildExperimentNet(syn map[string]string, useYAML bool) {
+func BuildExperimentNet(syn map[string]string, useYAML bool, idCounter int, traceMgr *TraceManager) {
 	// syn is a map that binds pre-defined keys referring to input file types with file names
 	// The keys are
 	//	"funcExecInput"	- file describing function and device operation execution timing
@@ -85,8 +87,13 @@ func BuildExperimentNet(syn map[string]string, useYAML bool) {
 		panic("empty dictionary")
 	}
 
+	NumIds = idCounter
+
 	// populate topology data structures that enable reference to the structures just read in
-	createTopoReferences(tc)
+	createTopoReferences(tc, traceMgr)
+
+	// save as global to mrnes for tracing network execution
+	devTraceMgr = traceMgr
 
 	devExecTimeTbl = buildDevExecTimeTbl(del)
 
@@ -100,6 +107,7 @@ type valueStruct struct {
 	intValue    int
 	floatValue  float64
 	stringValue string
+	boolValue   bool
 }
 
 // setModelParameters takes the list of type ExpCfg and merges them
@@ -160,6 +168,8 @@ func setModelParameters(expCfg *ExpCfg) {
 				vs = "100e8"
 			case "packetSize":
 				vs = "1500"
+			case "trace":
+				vs = "false"
 			default:
 				msg := fmt.Sprintf("problem %s in default default parameters\n", param)
 				panic(msg)
@@ -300,7 +310,7 @@ func setModelParameters(expCfg *ExpCfg) {
 // stringToValueStruct takes a string (used in the run-time configuration phase)
 // and determines whether it is an integer, floating point, or a string
 func stringToValueStruct(v string) valueStruct {
-	vs := valueStruct{intValue: 0, floatValue: 0.0, stringValue: ""}
+	vs := valueStruct{intValue: 0, floatValue: 0.0, stringValue: "", boolValue: false}
 
 	// try conversion to int
 	ivalue, ierr := strconv.Atoi(v)
@@ -317,7 +327,12 @@ func stringToValueStruct(v string) valueStruct {
 		return vs
 	}
 
-	// left with it being a string
+	// left with it being a string.  See if true, True
+	if v == "true" || v == "True" {
+		vs.boolValue = true
+		return vs
+	}
+
 	vs.stringValue = v
 	return vs
 }
@@ -350,12 +365,12 @@ var topoDevByName map[string]topoDev
 var topoGraph map[int][]int
 
 // utility function for generating unique integer ids on demand
-var numIds int = 0
+var NumIds int = 0
 
 // nxtId creates an id for objects created within mrnes module that are unique among those objects
 func nxtId() int {
-	numIds += 1
-	return numIds
+	NumIds += 1
+	return NumIds
 }
 
 // GetExperimentNetDicts accepts a map that holds the names of the input files used for the network part of an experiment
@@ -400,7 +415,7 @@ func GetExperimentNetDicts(syn map[string]string) (*TopoCfg, *DevExecList, *ExpC
 }
 
 // createTopoReferences reads from the input TopoCfg file to create references
-func createTopoReferences(topoCfg *TopoCfg) {
+func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	// initialize the maps and slices used for object lookup
 	topoDevById = make(map[int]topoDev)
 	topoDevByName = make(map[string]topoDev)
@@ -449,6 +464,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 		// for paramObj interface
 		paramObjById[rtrId] = rtrDev
 		paramObjByName[rtrName] = rtrDev
+
+		// store id -> name for trace
+		tm.AddName(rtrId, rtrName, "router")
 	}
 
 	// fetch the switch descriptions
@@ -470,6 +488,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 		// for paramObj interface
 		paramObjById[switchId] = switchDev
 		paramObjByName[switchName] = switchDev
+
+		// store id -> name for trace
+		tm.AddName(switchId, switchName, "switch")
 	}
 
 	// fetch the host descriptions
@@ -491,6 +512,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 		// for paramObj interface
 		paramObjById[hostId] = hostDev
 		paramObjByName[hostName] = hostDev
+
+		// store id -> name for trace
+		tm.AddName(hostId, hostName, "host")
 	}
 
 	// fetch the network descriptions
@@ -505,6 +529,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 		// for paramObj interface
 		paramObjById[net.number] = net
 		paramObjByName[net.name] = net
+
+		// store id -> name for trace
+		tm.AddName(net.number, net.name, "network")
 	}
 
 	// fetch the broadcast domain descriptions
@@ -513,6 +540,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 		bcd := createBrdcstDmnStruct(&bd)
 		brdcstDmnById[bcd.number] = bcd
 		brdcstDmnByName[bd.Name] = bcd
+
+		// store id -> name for trace
+		tm.AddName(bcd.number, bcd.name, "BCD")
 	}
 
 	// include lists of interfaces for each device
@@ -530,7 +560,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 			paramObjById[is.number] = is
 			paramObjByName[intrfc.Name] = is
 
-			// look up the hosting router, name froun in desc description
+			// store id -> name for trace
+			tm.AddName(is.number, intrfc.Name, "interface")
+
 			rtr := routerDevByName[rtrDesc.Name]
 			rtr.addIntrfc(is)
 		}
@@ -544,6 +576,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 			// save is for reference by id or name
 			intrfcById[is.number] = is
 			intrfcByName[intrfc.Name] = is
+
+			// store id -> name for trace
+			tm.AddName(is.number, intrfc.Name, "interface")
 
 			// for paramObj interface
 			paramObjById[is.number] = is
@@ -563,6 +598,9 @@ func createTopoReferences(topoCfg *TopoCfg) {
 			// save is for reference by id or name
 			intrfcById[is.number] = is
 			intrfcByName[intrfc.Name] = is
+
+			// store id -> name for trace
+			tm.AddName(is.number, intrfc.Name, "interface")
 
 			// for paramObj interface
 			paramObjById[is.number] = is
