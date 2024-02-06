@@ -353,7 +353,8 @@ type intrfcStruct struct {
 type intrfcState struct {
 	bndwdth    float64         // maximum bandwidth (in Mbytes/sec)
 	bufferSize float64         // buffer capacity (in Mbytes)
-	latency    float64         // time the leading bit takes to traverse the interface
+	latency    float64         // time the leading bit takes to traverse the wire out of the interface
+	delay		float64         // time the leading bit takes to traverse the interface
 	pcktSize   int             // maximum packet size
 	trace      bool            // switch for calling add trace
 	active     map[int]float64 // id of a flow actively passing through the interface, and its bandwidth
@@ -443,10 +444,14 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 		if vStr == "Wireless" || vStr == "2ireless" {
 			intrfc.media = wireless
 		}
-	// latency and bandwidth are floats
+	// latency, delay, and bandwidth are floats
 	case "latency", "Latency":
 		// units of latency are seconds
 		intrfc.state.latency = value.floatValue
+
+	case "delay", "Delay":
+		// units of delay are seconds
+		intrfc.state.delay = value.floatValue
 
 	case "bandwidth", "Bandwidth", "bndwdth":
 		// units of bandwidth are Mbytes/sec
@@ -1074,10 +1079,11 @@ func transitDelay(nm *networkMsgEdge) (float64, *networkStruct) {
 	// recover the interfaces themselves and the network between them, if any
 	srcIntrfc, dstIntrfc, net := currentIntrfcs(nm)
 
-	// delay is either through network (baseline) or across a pt-to-pt line
 	if net != nil {
+		// delay is through network (baseline) 
 		delay = net.netState.latency
 	} else {
+		// delay is across a pt-to-pt line
 		delay = pt2ptLatency(srcIntrfc, dstIntrfc)
 	}
 
@@ -1223,8 +1229,8 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
 
-	// get latency through interface
-	delay := intrfc.state.latency
+	// get delay through interface
+	delay := intrfc.state.delay
 
 	// schedule exit from this interface after msg passes through
 	evtMgr.Schedule(egressIntrfc, msg, exitEgressIntrfc, vrtime.SecondsToTime(delay))
@@ -1293,8 +1299,8 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 		}
 	}
 
-	// get latency through interface
-	delay := intrfc.state.latency
+	// get delay through interface
+	delay := intrfc.state.delay
 
 	// schedule exit from this interface after msg passes through
 	evtMgr.Schedule(ingressIntrfc, msg, exitIngressIntrfc, vrtime.SecondsToTime(delay))
