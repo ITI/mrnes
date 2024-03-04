@@ -205,10 +205,6 @@ type rtEndpts struct {
 func networkBetween(devA, devB topoDev) string {
 	facedByA := []string{}
 
-	if devB.devName() == "decrypt-host" && devA.devName() == "dstBcd.Hub" {
-		fmt.Println("here we are")
-	}
-
 	for _, intrfc := range devA.devIntrfcs() {
 		facedByA = append(facedByA, intrfc.faces.name)
 	}
@@ -221,8 +217,24 @@ func networkBetween(devA, devB topoDev) string {
 	return ""
 }
 
-// compute identify of the interface between routeSteps rsA and rsB
+// commonNetId checks that intrfcA and intrfcB point at the same network and returns its name
+func commonNetId(intrfcA, intrfcB *intrfcStruct) int {
+	if intrfcA.faces == nil || intrfcB.faces == nil {
+		panic("interface on route fails to face any network")
+	}
+
+	if intrfcA.faces.name != intrfcB.faces.name {
+		panic("interfaces on route do not face the same network")
+	}
+	return intrfcA.faces.number
+}
+
+
+// compute identify of the interfaces between routeSteps rsA and rsB
 func intrfcsBetween(rsA, rsB int) (int, int) {
+	return getRouteStepIntrfcs(rsA, rsB)
+}
+/*
 	devA := topoDevById[rsA]
 	devB := topoDevById[rsB]
 
@@ -240,11 +252,11 @@ func intrfcsBetween(rsA, rsB int) (int, int) {
 
 	// find the interface on rsA that connects to rsB
 	for _, intrfc := range devA.devIntrfcs() {
-		if intrfc.connects != nil && topoDevByName[intrfc.connects.device.devName()].devId() == idB {
+		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devId() == idB {
 			intrfcA = intrfc.number
 			break
 		}
-		if intrfc.connects == nil && intrfc.faces.name == netName {
+		if !intrfc.isConnected() && intrfc.faces.name == netName {
 			intrfcA = intrfc.number
 			break
 		}
@@ -252,11 +264,11 @@ func intrfcsBetween(rsA, rsB int) (int, int) {
 
 	// find the interface on rsB that connects to rsA
 	for _, intrfc := range devB.devIntrfcs() {
-		if intrfc.connects != nil && topoDevByName[intrfc.connects.device.devName()].devId() == idA {
+		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devId() == idA {
 			intrfcB = intrfc.number
 			break
 		}
-		if intrfc.connects == nil && intrfc.faces.name == netName {
+		if !intrfc.isConnected() && intrfc.faces.name == netName {
 			intrfcB = intrfc.number
 			break
 		}
@@ -271,8 +283,9 @@ func intrfcsBetween(rsA, rsB int) (int, int) {
 
 	return -1, -1
 }
+*/
 
-var pcktRtCache = make(map[rtEndpts]*[]intrfcsToDev)
+var pcktRtCache map[rtEndpts]*[]intrfcsToDev = make(map[rtEndpts]*[]intrfcsToDev)
 
 func findRoute(srcId, dstId int) *[]intrfcsToDev {
 	endpoints := rtEndpts{srcId: srcId, dstId: dstId}
@@ -293,11 +306,12 @@ func findRoute(srcId, dstId int) *[]intrfcsToDev {
 		networkId := -1
 		dstIntrfc := intrfcById[dstIntrfcId]
 
-		// if 'connects' is nil we're pointing through a network and
+		// if 'cable' is nil we're pointing through a network and
 		// use its id
-		if dstIntrfc.connects == nil {
+		if dstIntrfc.cable == nil {
 			networkId = dstIntrfc.faces.number
 		}
+
 		istp := intrfcsToDev{srcIntrfcId: srcIntrfcId, dstIntrfcId: dstIntrfcId, netId: networkId, devId: devId}
 		routePlan = append(routePlan, istp)
 	}

@@ -9,11 +9,11 @@ import (
 	"github.com/iti/evt/evtm"
 	"github.com/iti/evt/vrtime"
 	"github.com/iti/rngstream"
+	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 	"math"
 	"os"
 	"path"
-	"strings"
 )
 
 // a rtnRecord saves the event handling function to call when the network simulation
@@ -23,6 +23,25 @@ type rtnRecord struct {
 	rtnFunc evtm.EventHandlerFunction
 	rtnCxt  any
 }
+
+type intPair struct {
+	i, j int
+}
+
+var routeStepIntrfcs map[intPair]intPair
+
+func getRouteStepIntrfcs(srcId, dstId int) (int, int) {
+	ip := intPair{i:srcId, j:dstId}
+	intrfcs, present := routeStepIntrfcs[ip]
+	if !present {
+		intrfcs, present = routeStepIntrfcs[intPair{i:dstId, j:srcId}]
+		if !present {
+			panic(fmt.Errorf("no step between %s and %s\n", topoDevById[srcId].devName(), topoDevById[dstId].devName()))
+		}
+	}
+	return intrfcs.i, intrfcs.j
+}
+
 
 // a NetworkPortal implements the mrnesbits interface used to pass
 // traffice between the application layer and the network sim
@@ -53,9 +72,16 @@ func CreateNetworkPortal(qksim bool) *NetworkPortal {
 // HostCPU helps NetworkPortal implement the mrnesbits NetworkPortal interface,
 // returning the CPU type associated with a named host.  Present because the
 // application layer does not otherwise have visibility into the network topology
-func (np *NetworkPortal) HostCPU(hostname string) string {
-	host := hostDevByName[hostname]
-	return host.hostState.hostCPU
+func (np *NetworkPortal) HostCPU(devName string) string {
+	host, present := hostDevByName[devName]
+	if present {
+		return host.hostCPU
+	}	
+	filter, present := filterDevByName[devName]
+	if present {
+		return filter.filterCPU
+	}
+	return ""
 }
 
 // Depart is called to return an application message being carried through
@@ -108,10 +134,17 @@ type NameType struct {
 // TraceManger implements the mrnesbits TraceManager interface. It is
 // use to gather information about a simulation model and an execution of that model
 type TraceManager struct {
-	InUse    bool                  // experiment uses trace
-	ExpName  string                // name of experiment
-	NameById map[int]NameType      // text name associated with each objId
-	Traces   map[int][]TraceRecord // all trace records for this experiment
+	// experiment uses trace
+	InUse    bool                  `json:"inuse" yaml:"inuse"`
+
+	// name of experiment
+	ExpName  string                `json:"expname" yaml:"expname"`
+
+	// text name associated with each objId
+	NameById map[int]NameType      `json:"namebyid" yaml:"namebyid"`
+
+	// all trace records for this experiment
+	Traces   map[int][]TraceRecord `json:"traces" yaml:"traces"`
 }
 
 // CreateTraceManager is a constructor.  It saves the name of the experiment
@@ -132,6 +165,7 @@ func (tm *TraceManager) Active() bool {
 	return tm.InUse
 }
 
+
 // AddTrace creates a record of the trace using its calling arguments, and stores it
 func (tm *TraceManager) AddTrace(vrt vrtime.Time, execId, flowId, objId int, objType string,
 	objEntry, msgEntry bool, rate float64) {
@@ -145,7 +179,6 @@ func (tm *TraceManager) AddTrace(vrt vrtime.Time, execId, flowId, objId int, obj
 		fmt.Println("execId is zero")
 	}
 
-	// initialize the slice for this execution id, if needed
 	_, present := tm.Traces[execId]
 	if !present {
 		tm.Traces[execId] = make([]TraceRecord, 0)
@@ -154,6 +187,7 @@ func (tm *TraceManager) AddTrace(vrt vrtime.Time, execId, flowId, objId int, obj
 	// create and add the trace record
 	vmr := TraceRecord{Time: vrt.Seconds(), Ticks: vrt.Ticks(), Priority: vrt.Pri(), FlowId: flowId,
 		ExecId: execId, ObjType: objType, ObjId: objId, ObjEntry: objEntry, MsgEntry: msgEntry, Rate: rate}
+
 	tm.Traces[execId] = append(tm.Traces[execId], vmr)
 }
 
@@ -203,6 +237,7 @@ const (
 	hostCode devCode = iota
 	switchCode
 	routerCode
+	filterCode
 	unknownCode
 )
 
@@ -215,6 +250,8 @@ func devCodeFromStr(code string) devCode {
 		return switchCode
 	case "Router", "router", "rtr":
 		return routerCode
+	case "Filter", "filter":
+		return filterCode
 	default:
 		return unknownCode
 	}
@@ -229,6 +266,8 @@ func devCodeToStr(code devCode) string {
 		return "Switch"
 	case routerCode:
 		return "Router"
+	case filterCode:
+		return "Filter"
 	case unknownCode:
 		return "Unknown"
 	}
@@ -236,11 +275,11 @@ func devCodeToStr(code devCode) string {
 	return "Unknown"
 }
 
-// networkType is the base type for an enumerated type of network type descriptions
-type networkType int
+// networkScale is the base type for an enumerated type of network type descriptions
+type networkScale int
 
 const (
-	LAN networkType = iota
+	LAN networkScale = iota
 	WAN
 	T3
 	T2
@@ -248,9 +287,9 @@ const (
 	GeneralNet
 )
 
-// netTypeFromStr returns the networkType corresponding to an string name for it
-func netTypeFromStr(netType string) networkType {
-	switch netType {
+// netScaleFromStr returns the networkScale corresponding to an string name for it
+func netScaleFromStr(netScale string) networkScale {
+	switch netScale {
 	case "LAN":
 		return LAN
 	case "WAN":
@@ -266,8 +305,8 @@ func netTypeFromStr(netType string) networkType {
 	}
 }
 
-// netTypeToStr returns a string name that corresponds to an input networkType
-func netTypeToStr(ntype networkType) string {
+// netScaleToStr returns a string name that corresponds to an input networkScale
+func netScaleToStr(ntype networkScale) string {
 	switch ntype {
 	case LAN:
 		return "LAN"
@@ -324,13 +363,14 @@ type topoDev interface {
 	devState() any                // every device as a structure of state that can be accessed
 	devAddActive(*networkMsgEdge) // add the flowId argument to the device's list of active flows
 	devRmActive(int)              // remove the flowId argument to the device's list of active flows
+	LogNetEvent(vrtime.Time, int, int, bool, bool, float64)
 }
 
 // ParamContainer interface is satisfied by every network object that
 // can be configured at run-time with performance parameters. These
 // are intrfcStruct, networkStruct, switchDev, hostDev, routerDev
 type paramObj interface {
-	matchParam(string) bool
+	matchParam(string, string) bool
 	setParam(string, valueStruct)
 	paramObjName() string
 	LogNetEvent(vrtime.Time, int, int, bool, bool, float64)
@@ -339,12 +379,16 @@ type paramObj interface {
 // The intrfcStruct holds information about a network interface embedded in a device
 type intrfcStruct struct {
 	name     string         // unique name, probably generated automatically
+	groups	 []string		// list of groups this interface may belong to
 	number   int            // unique integer id, probably generated automatically
 	devType  devCode        // device code of the device holding the interface
 	media    networkMedia   // media of the network the interface interacts with
 	device   topoDev        // pointer to the device holding the interface
 	prmDev   paramObj       // pointer to the device holding the interface as a paramObj
-	connects *intrfcStruct  // For a wired interface, points to the "other" interface in the connection
+	attrib	 string
+	carry    *intrfcStruct  // points to the "other" interface in a connection
+	cable	 *intrfcStruct  // For a wired interface, points to the "other" interface in the connection
+	wireless []*intrfcStruct // For a wired interface, points to the "other" interface in the connection
 	faces    *networkStruct // pointer to the network the interface interacts with
 	state    *intrfcState   // pointer to the interface's block of state information
 }
@@ -354,8 +398,8 @@ type intrfcState struct {
 	bndwdth    float64         // maximum bandwidth (in Mbytes/sec)
 	bufferSize float64         // buffer capacity (in Mbytes)
 	latency    float64         // time the leading bit takes to traverse the wire out of the interface
-	delay		float64         // time the leading bit takes to traverse the interface
-	pcktSize   int             // maximum packet size
+	delay	   float64         // time the leading bit takes to traverse the interface
+	mtu		   int             // maximum packet size (bytes)
 	trace      bool            // switch for calling add trace
 	active     map[int]float64 // id of a flow actively passing through the interface, and its bandwidth
 }
@@ -364,8 +408,9 @@ func createIntrfcState() *intrfcState {
 	iss := new(intrfcState)
 	iss.bndwdth = 0.0    // will be initialized or else we'll notice
 	iss.bufferSize = 0.0 // not really using bufferSize yet
-	iss.latency = 1e+6   // in seconds!  Set this way so that if not initialized we'll notice
-	iss.pcktSize = 1500  // in bytes Set for Ethernet2 MTU, should change if wireless
+	iss.delay = 1e+6   // in seconds!  Set this way so that if not initialized we'll notice
+	iss.latency = 1e+6
+	iss.mtu = 1500  // in bytes Set for Ethernet2 MTU, should change if wireless
 	iss.active = make(map[int]float64)
 	iss.trace = false
 	return iss
@@ -374,6 +419,8 @@ func createIntrfcState() *intrfcState {
 // createIntrfcStruct is a constructor, building an intrfcStruct from a desc description of the interface
 func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 	is := new(intrfcStruct)
+
+	is.groups = intrfc.Groups
 
 	// name comes from desc description
 	is.name = intrfc.Name
@@ -389,6 +436,8 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 		is.devType = routerCode
 	case "Switch":
 		is.devType = switchCode
+	case "Filter":
+		is.devType = filterCode
 	}
 
 	// The desc description gives the name of the device hosting the interface.
@@ -406,6 +455,8 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 	default:
 		is.media = unknownMedia
 	}
+
+	is.wireless = make([]*intrfcStruct,0)
 	is.state = createIntrfcState()
 
 	return is
@@ -417,16 +468,17 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 // attribute given matchParam as input matches what the interface has. The
 // interface attributes that can be tested are the device type of device that hosts it, and the
 // media type of the network it interacts with
-func (intrfc *intrfcStruct) matchParam(attribute string) bool {
-	switch attribute {
-	case "Switch", "Host", "Router", "switch", "host", "router":
-		return strings.EqualFold(attribute, devCodeToStr(intrfc.devType))
-	case "wired", "Wired":
-		return intrfc.media == wired
-	case "wireless", "Wireless":
-		return intrfc.media == wireless
+func (intrfc *intrfcStruct) matchParam(attrbName, attrbValue string) bool {
+	switch attrbName {
+		case "name":
+			return intrfc.name == attrbValue
+		case "group":
+			return slices.Contains(intrfc.groups, attrbValue)
+		case "media":
+			return netMediaFromStr(attrbValue) == intrfc.media
 	}
 
+	// an error really, as we should match only the names given in the switch statement above
 	return false
 }
 
@@ -435,30 +487,19 @@ func (intrfc *intrfcStruct) matchParam(attribute string) bool {
 // setParam's definition here helps intrfcStruct satisfy the paramObj interface.
 func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 	switch paramType {
-	case "media":
-		// media is a string, "wired" or "wireless" if encoded properly
-		vStr := value.stringValue
-		if vStr == "Wired" || vStr == "wired" {
-			intrfc.media = wired
-		}
-		if vStr == "Wireless" || vStr == "2ireless" {
-			intrfc.media = wireless
-		}
 	// latency, delay, and bandwidth are floats
-	case "latency", "Latency":
-		// units of latency are seconds
+	case "latency":
+		// units of delay are seconds
 		intrfc.state.latency = value.floatValue
-
-	case "delay", "Delay":
+	case "delay":
 		// units of delay are seconds
 		intrfc.state.delay = value.floatValue
-
-	case "bandwidth", "Bandwidth", "bndwdth":
+	case "bandwidth":
 		// units of bandwidth are Mbytes/sec
 		intrfc.state.bndwdth = value.floatValue
-	case "packetSize":
+	case "MTU":
 		// number of bytes in maximally sized packet
-		intrfc.state.pcktSize = value.intValue
+		intrfc.state.mtu = value.intValue
 	case "trace":
 		intrfc.state.trace = value.boolValue
 	}
@@ -476,15 +517,27 @@ func (intrfc *intrfcStruct) paramObjName() string {
 	return intrfc.name
 }
 
+
 // linkIntrfcStruct sets the 'connect' and 'faces' values
 // of an intrfcStruct based on the names coded in a IntrfcDesc.
 func linkIntrfcStruct(intrfcDesc *IntrfcDesc) {
 	// look up the intrfcStruct corresponding to the interface named in input intrfc
 	is := intrfcByName[intrfcDesc.Name]
 
-	// in IntrfcDesc the 'Connects' field is a string, holding the name of the target interface
-	if len(intrfcDesc.Connects) > 0 {
-		is.connects = intrfcByName[intrfcDesc.Connects]
+	// in IntrfcDesc the 'Cable' field is a string, holding the name of the target interface
+	if len(intrfcDesc.Cable) > 0 {
+		is.cable = intrfcByName[intrfcDesc.Cable]
+	}
+
+	// in IntrfcDesc the 'Cable' field is a string, holding the name of the target interface
+	if len(intrfcDesc.Carry) > 0 {
+		is.carry = intrfcByName[intrfcDesc.Carry]
+	}
+
+	if len(intrfcDesc.Wireless) > 0 {
+		for _, intrfcName := range intrfcDesc.Wireless {
+			is.wireless = append(is.wireless, intrfcByName[intrfcName])
+		}
 	}
 
 	// in IntrfcDesc the 'Faces' field is a string, holding the name of the network the interface
@@ -494,14 +547,22 @@ func linkIntrfcStruct(intrfcDesc *IntrfcDesc) {
 	}
 }
 
+// availBndwdth returns the interface bandwidth available to a new flow
+func (intrfc *intrfcStruct) availBndwdth() float64 {
+	return intrfc.state.bndwdth
+}
+
 // A networkStruct holds the attributes of one of the model's communication subnetworks
 type networkStruct struct {
 	name          string             // unique name
+	groups		  []string			 // list of groups to which network belongs
 	number        int                // unique integer id
-	netType       networkType        // type, e.g., LAN, WAN, etc.
+	netScale      networkScale        // type, e.g., LAN, WAN, etc.
 	netMedia      networkMedia       // communication fabric, e.g., wired, wireless
-	netBrdcstDmns []*brdcstDmnStruct // list of pointers to Broadcast domains nestled within the subnetwork
 	netRouters    []*routerDev       // list of pointers to routerDevs with interfaces that face this subnetwork
+	netSwitches   []*switchDev       // list of pointers to routerDevs with interfaces that face this subnetwork
+	netFilters    []*filterDev       // list of pointers to routerDevs with interfaces that face this subnetwork
+	netHosts      []*hostDev       // list of pointers to routerDevs with interfaces that face this subnetwork
 	netState      *networkState      // pointer to a block of information comprising the network 'state'
 }
 
@@ -510,6 +571,7 @@ type networkState struct {
 	latency float64         // latency through network (without considering explicitly declared wired connections) under no load
 	load    float64         // real-time value of total load (in units of Mbytes/sec)
 	bndwdth float64         // maximum bandwidth between any two routers in network
+	capacity float64        // maximum traffic capacity of network
 	trace   bool            // switch for calling trace saving
 	active  map[int]float64 // keep track of flows through the network
 }
@@ -518,16 +580,9 @@ type networkState struct {
 // of a network to its networkStruct representation.  This is separated from
 // the createNetworkStruct constructor because it requires that the brdcstDmnByName
 // and routerDevByName lists have been created, which in turn requires that
-// the BCD and router constructors have already been called.  So the call to initNetworkStruct
+// the router constructors have already been called.  So the call to initNetworkStruct
 // is delayed until all of the network device constructors have been called.
 func (ns *networkStruct) initNetworkStruct(nd *NetworkDesc) {
-	// in NetworkDesc a broadcast domain is referred to through its string name
-	ns.netBrdcstDmns = make([]*brdcstDmnStruct, 0)
-	for _, bcdName := range nd.BrdcstDmns {
-		// use the BCD name to find a pointer to its run-time representation, and append to the network's list
-		ns.netBrdcstDmns = append(ns.netBrdcstDmns, brdcstDmnByName[bcdName])
-	}
-
 	// in NetworkDesc a router is referred to through its string name
 	ns.netRouters = make([]*routerDev, 0)
 	for _, rtrName := range nd.Routers {
@@ -535,6 +590,28 @@ func (ns *networkStruct) initNetworkStruct(nd *NetworkDesc) {
 		// to the router and append to the network's list
 		ns.addRouter(routerDevByName[rtrName])
 	}
+	
+	ns.netHosts = make([]*hostDev, 0)
+	for _, hostName := range nd.Hosts {
+		// use the router name from the desc representation to find the run-time pointer
+		// to the router and append to the network's list
+		ns.addHost(hostDevByName[hostName])
+	}
+
+	ns.netFilters = make([]*filterDev, 0)
+	for _, filterName := range nd.Filters {
+		// use the router name from the desc representation to find the run-time pointer
+		// to the router and append to the network's list
+		ns.addFilter(filterDevByName[filterName])
+	}
+
+	ns.netSwitches = make([]*switchDev, 0)
+	for _, switchName := range nd.Switches {
+		// use the router name from the desc representation to find the run-time pointer
+		// to the router and append to the network's list
+		ns.addSwitch(switchDevByName[switchName])
+	}
+	ns.groups = nd.Groups
 }
 
 // createNetworkStruct is a constructor that initialized some of the features of the networkStruct
@@ -545,20 +622,23 @@ func createNetworkStruct(nd *NetworkDesc) *networkStruct {
 	// copy the name
 	ns.name = nd.Name
 
+	ns.groups = []string{}
+
 	// get a unique integer id locally
 	ns.number = nxtId()
 
-	// get a netType type from a desc string expression of it
-	ns.netType = netTypeFromStr(nd.NetType)
+	// get a netScale type from a desc string expression of it
+	ns.netScale = netScaleFromStr(nd.NetScale)
 
 	// get a netMedia type from a desc string expression of it
 	ns.netMedia = netMediaFromStr(nd.MediaType)
 
-	// initialize the BCD and Router lists, to be filled in by
-	// initNetworkStruct after the BCD and router constructors are called
-	ns.netBrdcstDmns = make([]*brdcstDmnStruct, 0)
+	// initialize the Router lists, to be filled in by
+	// initNetworkStruct after the router constructors are called
 	ns.netRouters = make([]*routerDev, 0)
-
+	ns.netHosts  = make([]*hostDev, 0)
+	ns.netFilters = make([]*filterDev, 0)
+	
 	// make the state structure, will flesh it out from run-time configuration parameters
 	ns.netState = new(networkState)
 	ns.netState.active = make(map[int]float64)
@@ -571,15 +651,19 @@ func createNetworkStruct(nd *NetworkDesc) *networkStruct {
 // paramObj interface.  To apply or not to apply depends in part on whether the
 // attribute given matchParam as input matches what the interface has. The
 // interface attributes that can be tested are the media type, and the nework type
-func (ns *networkStruct) matchParam(attribute string) bool {
-	switch attribute {
-	case "wired", "Wired":
-		return ns.netMedia == wired
-	case "wireless", "Wireless":
-		return ns.netMedia == wireless
-	case "LAN", "WAN", "T3", "T2", "T1":
-		return attribute == netTypeToStr(ns.netType)
+func (ns *networkStruct) matchParam(attrbName, attrbValue string) bool {
+	switch attrbName {
+		case "name":
+			return ns.name == attrbValue
+		case "group":
+			return slices.Contains(ns.groups, attrbValue)
+		case "media":
+			return netMediaFromStr(attrbValue) == ns.netMedia
+		case "scale":
+			return ns.netScale == netScaleFromStr(attrbValue)
 	}
+
+	// an error really, as we should match only the names given in the switch statement above
 	return false
 }
 
@@ -588,25 +672,19 @@ func (ns *networkStruct) matchParam(attribute string) bool {
 // setParam's definition here helps networkStruct satisfy the paramObj interface.
 func (ns *networkStruct) setParam(paramType string, value valueStruct) {
 	// for some attributes we'll want the string-based value, for others the floating point one
-	strValue := value.stringValue
 	fltValue := value.floatValue
 
 	// branch on the parameter being set
 	switch paramType {
-	case "media":
-		if strValue == "wired" || strValue == "Wired" {
-			ns.netMedia = wired
+		case "latency":
+			ns.netState.latency = fltValue
+		case "bandwidth": 
+			ns.netState.bndwdth = fltValue
+		case "capacity": 
+			ns.netState.capacity = fltValue
+		case "trace":
+			ns.netState.trace = value.boolValue
 		}
-		if strValue == "wireless" || strValue == "Wireless" {
-			ns.netMedia = wireless
-		}
-	case "latency", "Latency":
-		ns.netState.latency = fltValue
-	case "bandwidth", "Bandwidth", "bndwdth":
-		ns.netState.bndwdth = fltValue
-	case "trace":
-		ns.netState.trace = value.boolValue
-	}
 }
 
 // paramObjName helps networkStruct satisfy paramObj interface, returns network name
@@ -633,50 +711,196 @@ func (ns *networkStruct) addRouter(newrtr *routerDev) {
 	ns.netRouters = append(ns.netRouters, newrtr)
 }
 
-// A brdcstDmnStruct holds information about a broadcast domain
-type brdcstDmnStruct struct {
-	name       string         // unique name
-	number     int            // unique integer id
-	bcdNetwork *networkStruct // pointer to network in which it is nested
-	bcdHosts   []*hostDev     // list of hosts with interfaces which face the BCD
-	bcdHub     topoDev        // BCD communication hub, either a Switch or a wireless Router
-}
-
-// initBrdcstDmnStruct initializes the BCD's list of hosts by transforming
-// the host names from its BroadcastDomainDesc description to its runtime
-// hostDev object.  The call to initBrdcstDmnStruct is made after all of the
-// network objects' constructors have been called, to ensure access to their pointers
-func (bcd *brdcstDmnStruct) initBrdcstDmnStruct(bd *BroadcastDomainDesc) {
-	for _, hostName := range bd.Hosts {
-		bcd.bcdHosts = append(bcd.bcdHosts, hostDevByName[hostName])
+// addHost includes the host given as input parameter on the network list of hosts that face it
+func (ns *networkStruct) addHost(newhost *hostDev) {
+	// skip if host already exists in network netHosts list
+	for _, host := range ns.netHosts {
+		if host == newhost || host.hostName == newhost.hostName {
+			return
+		}
 	}
-	bcd.bcdNetwork = networkByName[bd.Network]
-	bcd.bcdHub = topoDevByName[bd.Hub]
+	ns.netHosts = append(ns.netHosts, newhost)
 }
 
-// createBrdcstDmnStruct is a constructor that takes information about a BCD
-// from its representation in BroadcastDomainDesc to the BCD's run-time representation
-func createBrdcstDmnStruct(bd *BroadcastDomainDesc) *brdcstDmnStruct {
-	bcd := new(brdcstDmnStruct)
-	bcd.name = bd.Name                 // unique name
-	bcd.number = nxtId()               // unique integer id, generated when model is loaded
-	bcd.bcdHosts = make([]*hostDev, 0) // initialize list of hosts
-	return bcd
+// addFilter includes the filter given as input parameter on the network list of filters that face it
+func (ns *networkStruct) addFilter(newfilter *filterDev) {
+	// skip if filter already exists in network netFilters list
+	for _, filter := range ns.netFilters {
+		if filter == newfilter || filter.filterName == newfilter.filterName {
+			return
+		}
+	}
+	ns.netFilters = append(ns.netFilters, newfilter)
+}
+
+// addSwitch includes the swtch given as input parameter on the network list of swtchs that face it
+func (ns *networkStruct) addSwitch(newswtch *switchDev) {
+	// skip if swtch already exists in network netSwitches list
+	for _, swtch := range ns.netSwitches {
+		if swtch == newswtch || swtch.switchName == newswtch.switchName {
+			return
+		}
+	}
+	ns.netSwitches = append(ns.netSwitches, newswtch)
+}
+
+// netBndwdth returns the current bandwidth available for a new flow
+func (ns *networkStruct) availBndwdth() float64 {
+	return ns.netState.bndwdth
+}
+
+// a filterDev holds information about a filter
+type filterDev struct {
+	filterName      string          // unique name
+	filterModel     string          // type of CPU the filter uses
+	filterCPU       string          // type of CPU the filter uses
+	filterGroups	[]string        // list of groups to which filter belongs
+	filterId        int             // unique integer id
+	filterIntrfcs   []*intrfcStruct // list of network interfaces embedded in the filter
+	filterState     *filterDevState   // a struct holding filter state
+}
+
+// a filterDevState holds extra informat used by the filter
+type filterDevState struct {
+	rngstrm *rngstream.RngStream // pointer to a random number generator
+	filterAccelerator bool		 // whether there is a crypto accelerator on-board
+	trace   bool                 // switch for calling add trace
+	active  map[int]float64
+}
+
+// matchParam is for other paramObj objects a method for seeing whether
+// the device attribute matches the input.  'cept the filterDev is not declared
+// to have any such attributes, so this function (included to let filterDev be
+// a paramObj) returns false.  Included to allow filterDev to satisfy paramObj interface requirements
+func (filter *filterDev) matchParam(attrbName, attrbValue string) bool {
+	switch attrbName {
+		case "name":
+			return filter.filterName == attrbValue
+		case "group":
+			return slices.Contains(filter.filterGroups, attrbValue)
+		case "CPU":
+			return filter.filterCPU == attrbValue
+		case "model":
+			return filter.filterModel == attrbValue
+	}
+
+	// an error really, as we should match only the names given in the switch statement above
+	return false
+}
+
+// setParam gives a value to a filterDev parameter.  The design allows only
+// the CPU parameter to be set, which is allowed here
+func (filter *filterDev) setParam(param string, value valueStruct) {
+	switch param {
+		case "CPU":
+			filter.filterCPU = value.stringValue
+		case "trace":
+			filter.filterState.trace = value.boolValue
+		case "model":
+			filter.filterModel = value.stringValue
+		case "accelerator":
+			filter.filterState.filterAccelerator = value.boolValue
+	}
+}
+
+// paramObjName helps filterDev satisfy paramObj interface, returns the filter's name
+func (filter *filterDev) paramObjName() string {
+	return filter.filterName
+}
+
+// createFilterDev is a constructor, using information from the desc description of the filter
+func createFilterDev(filterDesc *FilterDesc) *filterDev {
+	filter := new(filterDev)
+	filter.filterName = filterDesc.Name             // unique name
+	filter.filterModel = filterDesc.Model
+	filter.filterCPU = filterDesc.CPU
+	filter.filterId = nxtId()                       // unique integer id, generated at model load-time
+	filter.filterIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
+	filter.filterGroups = filterDesc.Groups
+	filter.filterState = new(filterDevState)          // creation of state block, to be augmented later
+	filter.filterState.active = make(map[int]float64)
+	filter.filterState.trace = false
+	return filter
+}
+
+// addIntrfc appends the input intrfcStruct to the list of interfaces embedded in the filter.
+func (filter *filterDev) addIntrfc(intrfc *intrfcStruct) {
+	filter.filterIntrfcs = append(filter.filterIntrfcs, intrfc)
+}
+
+// rng returns a pointer to the random number stream used by all functions on the filter
+func (filter *filterDev) rng() *rngstream.RngStream {
+	fds := filter.filterState
+	return fds.rngstrm
+}
+
+// rng resturns the string type description of the CPU running the filter
+func (filter *filterDev) CPU() string {
+	return filter.filterCPU
+}
+
+// devName returns the filter name, as part of the topoDev interface
+func (filter *filterDev) devName() string {
+	return filter.filterName
+}
+
+// devId returns the filter integer id, as part of the topoDev interface
+func (filter *filterDev) devId() int {
+	return filter.filterId
+}
+
+// devType returns the filter's device type, as part of the topoDev interface
+func (filter *filterDev) devType() devCode {
+	return filterCode
+}
+
+// devIntrfcs returns the filter's list of interfaces, as part of the topoDev interface
+func (filter *filterDev) devIntrfcs() []*intrfcStruct {
+	return filter.filterIntrfcs
+}
+
+// devState returns the filter's state struct, as part of the topoDev interface
+func (filter *filterDev) devState() any {
+	return filter.filterState
+}
+
+func (filter *filterDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+	if !filter.filterState.trace {
+		return
+	}
+	devTraceMgr.AddTrace(time, execId, flowId, filter.filterId, "filter", objEntry, msgEntry, rate)
+}
+
+// devAddActive adds an active flow, as part of the topoDev interface.  Not used for filters, yet
+func (filter *filterDev) devAddActive(nme *networkMsgEdge) {
+	filter.filterState.active[nme.flowId] = nme.rate
+}
+
+// devRmActive removes an active flow, as part of the topoDev interface.  Not used for filters, yet
+func (filter *filterDev) devRmActive(flowId int) {
+	delete(filter.filterState.active, flowId)
+}
+
+// devDelay returns the state-dependent delay for passage through the device, as part of the topoDev interface.
+// Not really applicable to filter, so zero is returned
+func (filter *filterDev) devDelay(arg any) float64 {
+	return 0.0
 }
 
 // a hostDev holds information about a host
 type hostDev struct {
 	hostName      string          // unique name
+	hostGroups	  []string		  // list of groups to which host belongs
+	hostCPU		  string          // type of CPU the host uses
+	hostModel     string          // unique name
 	hostId        int             // unique integer id
 	hostIntrfcs   []*intrfcStruct // list of network interfaces embedded in the host
-	hostBrdcstDmn []string        // list of names of BCDs which the host faces
 	hostState     *hostDevState   // a struct holding host state
 }
 
 // a hostDevState holds extra informat used by the host
 type hostDevState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
-	hostCPU string               // type of CPU the host uses
 	trace   bool                 // switch for calling add trace
 	active  map[int]float64
 }
@@ -685,18 +909,32 @@ type hostDevState struct {
 // the device attribute matches the input.  'cept the hostDev is not declared
 // to have any such attributes, so this function (included to let hostDev be
 // a paramObj) returns false.  Included to allow hostDev to satisfy paramObj interface requirements
-func (host *hostDev) matchParam(attribute string) bool {
+func (host *hostDev) matchParam(attrbName, attrbValue string) bool {
+	switch attrbName {
+		case "name":
+			return host.hostName == attrbValue
+		case "group":
+			return slices.Contains(host.hostGroups, attrbValue)
+		case "model":
+			return host.hostModel == attrbValue
+		case "CPU":
+			return host.hostCPU == attrbValue
+	}
+
+	// an error really, as we should match only the names given in the switch statement above
 	return false
 }
 
 // setParam gives a value to a hostDev parameter.  The design allows only
 // the CPU parameter to be set, which is allowed here
 func (host *hostDev) setParam(param string, value valueStruct) {
-	if param == "CPU" || param == "cpu" {
-		host.hostState.hostCPU = value.stringValue
-	}
-	if param == "trace" {
-		host.hostState.trace = value.boolValue
+	switch param {
+		case "CPU":
+			host.hostCPU = value.stringValue
+		case "trace":
+			host.hostState.trace = value.boolValue
+		case "model":
+			host.hostModel = value.stringValue
 	}
 }
 
@@ -709,9 +947,11 @@ func (host *hostDev) paramObjName() string {
 func createHostDev(hostDesc *HostDesc) *hostDev {
 	host := new(hostDev)
 	host.hostName = hostDesc.Name               // unique name
+	host.hostModel = hostDesc.Model             
+	host.hostCPU = hostDesc.CPU			
 	host.hostId = nxtId()                       // unique integer id, generated at model load-time
-	host.hostBrdcstDmn = hostDesc.BrdcstDmn     // list of names of BCD's the host is part of
 	host.hostIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
+	host.hostGroups = hostDesc.Groups
 	host.hostState = new(hostDevState)          // creation of state block, to be augmented later
 	host.hostState.active = make(map[int]float64)
 	host.hostState.trace = false
@@ -731,8 +971,7 @@ func (host *hostDev) rng() *rngstream.RngStream {
 
 // rng resturns the string type description of the CPU running the host
 func (host *hostDev) CPU() string {
-	hds := host.hostState
-	return hds.hostCPU
+	return host.hostCPU
 }
 
 // devName returns the host name, as part of the topoDev interface
@@ -786,6 +1025,7 @@ func (host *hostDev) devDelay(arg any) float64 {
 // The switchDev struct holds information describing a run-time representation of a switch
 type switchDev struct {
 	switchName    string          // unique name
+	switchGroups  []string		  // groups to which the switch may belong
 	switchModel   string          // model name, used to identify performance characteristics
 	switchId      int             // unique integer id, generated at model-load time
 	switchIntrfcs []*intrfcStruct // list of network interfaces embedded in the switch
@@ -807,6 +1047,7 @@ func createSwitchDev(switchDesc *SwitchDesc) *switchDev {
 	swtch.switchModel = switchDesc.Model
 	swtch.switchId = nxtId()
 	swtch.switchIntrfcs = make([]*intrfcStruct, 0)
+	swtch.switchGroups = switchDesc.Groups
 	swtch.switchState = new(switchDevState)
 	swtch.switchState.active = make(map[int]float64)
 	swtch.switchState.trace = false
@@ -818,9 +1059,18 @@ func createSwitchDev(switchDesc *SwitchDesc) *switchDev {
 // the paramObj interface.  To apply or not to apply depends in part on whether the
 // attribute given matchParam as input matches what the switch has. 'model' is the
 // only attribute we use to match a switch
-func (swtch *switchDev) matchParam(attribute string) bool {
-	// the only attribute after * and name%% that matches is "model"
-	return attribute == "model"
+func (swtch *switchDev) matchParam(attrbName, attrbValue string) bool {
+	switch attrbName {
+		case "name":
+			return swtch.switchName == attrbValue
+		case "group":
+			return slices.Contains(swtch.switchGroups, attrbValue)
+		case "model":
+			return swtch.switchModel == attrbValue
+	}
+
+	// an error really, as we should match only the names given in the switch statement above
+	return false
 }
 
 // setParam gives a value to a switchDev parameter, to help satisfy the paramObj interface.
@@ -829,8 +1079,6 @@ func (swtch *switchDev) setParam(param string, value valueStruct) {
 	switch param {
 	case "model":
 		swtch.switchModel = value.stringValue
-	case "execTime":
-		swtch.switchState.execTime = value.floatValue
 	case "buffer":
 		swtch.switchState.buffer = value.floatValue
 	case "trace":
@@ -902,9 +1150,9 @@ func (swtch *switchDev) LogNetEvent(time vrtime.Time, execId int, flowId int, ob
 // The routerDev struct holds information describing a run-time representation of a router
 type routerDev struct {
 	routerName      string          // unique name
+	routerGroups	[]string		// list of groups to which the router belongs
 	routerModel     string          // attribute used to identify router performance characteristics
 	routerId        int             // unique integer id assigned at model-load time
-	routerBrdcstDmn string          // only when the router is used as a wireless hub for a BCD, its name
 	routerIntrfcs   []*intrfcStruct // list of interfaces embedded in the router
 	routerState     *routerState    // pointer to the struct of the routers auxiliary state
 }
@@ -924,7 +1172,7 @@ func createRouterDev(routerDesc *RouterDesc) *routerDev {
 	router.routerModel = routerDesc.Model
 	router.routerId = nxtId()
 	router.routerIntrfcs = make([]*intrfcStruct, 0)
-	router.routerBrdcstDmn = routerDesc.BrdcstDmn // non-empty string only when router is hub for BCD
+	router.routerGroups = routerDesc.Groups
 	router.routerState = new(routerState)
 	router.routerState.active = make(map[int]float64)
 	router.routerState.trace = false
@@ -936,23 +1184,30 @@ func createRouterDev(routerDesc *RouterDesc) *routerDev {
 // the paramObj interface.  To apply or not to apply depends in part on whether the
 // attribute given matchParam as input matches what the router has. 'model' is the
 // only attribute we use to match a router
-func (router *routerDev) matchParam(attribute string) bool {
-	// the only attribute after * and name%% that matches is "model"
-	return attribute == "model"
+func (router *routerDev) matchParam(attrbName, attrbValue string) bool {
+	switch attrbName {
+		case "name":
+			return router.routerName == attrbValue
+		case "group":
+			return slices.Contains(router.routerGroups, attrbValue)
+		case "model":
+			return router.routerModel == attrbValue
+	}
+
+	// an error really, as we should match only the names given in the switch statement above
+	return false
 }
 
 // setParam gives a value to a routerDev parameter, to help satisfy the paramObj interface.
 // Parameters that can be altered on a router are "model", "execTime", and "buffer"
 func (router *routerDev) setParam(param string, value valueStruct) {
 	switch param {
-	case "model":
-		router.routerModel = value.stringValue
-	case "execTime", "ExecTime":
-		router.routerState.execTime = value.floatValue
-	case "buffer", "Buffer":
-		router.routerState.buffer = value.floatValue
-	case "trace":
-		router.routerState.trace = value.boolValue
+		case "model":
+			router.routerModel = value.stringValue
+		case "buffer":
+			router.routerState.buffer = value.floatValue
+		case "trace":
+			router.routerState.trace = value.boolValue
 	}
 }
 
@@ -1063,6 +1318,8 @@ func currentIntrfcs(nm *networkMsgEdge) (*intrfcStruct, *intrfcStruct, *networkS
 	netId := (*nm.route)[nm.stepIdx].netId
 	if netId != -1 {
 		ns = networkById[netId]
+	} else {
+		ns = networkById[commonNetId(srcIntrfc, dstIntrfc)]
 	}
 
 	return srcIntrfc, dstIntrfc, ns
@@ -1079,7 +1336,12 @@ func transitDelay(nm *networkMsgEdge) (float64, *networkStruct) {
 	// recover the interfaces themselves and the network between them, if any
 	srcIntrfc, dstIntrfc, net := currentIntrfcs(nm)
 
-	if net != nil {
+	if (srcIntrfc.cable != nil && dstIntrfc.cable == nil) ||
+		 (srcIntrfc.cable == nil && dstIntrfc.cable != nil) {
+			panic("cabled interface confusion")
+	}
+
+	if srcIntrfc.cable == nil {
 		// delay is through network (baseline) 
 		delay = net.netState.latency
 	} else {
@@ -1130,15 +1392,21 @@ func transitDelay(nm *networkMsgEdge) (float64, *networkStruct) {
 // It creates networkMsgEdge structs to represent the start and end of the message, and
 // schedules their arrival to the egress interface of the message source host
 // func enterNetwork(evtMgr *evtm.EventManager, cpf cmpPtnFunc, cpm *cmpPtnMsg) any {
-func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcHost, dstHost string, msgLen int,
+func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev string, msgLen int,
 	execId int, rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction) any {
 
-	srcId := hostDevByName[srcHost].hostId
-	dstId := hostDevByName[dstHost].hostId
+	// srcId := hostDevByName[srcHost].hostId
+	// dstId := hostDevByName[dstHost].hostId
+	srcId := topoDevByName[srcDev].devId()
+	dstId := topoDevByName[dstDev].devId()
 
 	// get the route from srcId to dstId
 	route := findRoute(srcId, dstId)
 
+	if route == nil || len(*route) == 0 {
+		panic(fmt.Errorf("unable to find a route %s -> %s\n", srcDev, dstDev))
+	}
+		
 	// get the latency and bandwidth for traffic on this path, computed
 	// 'now'
 	latency, bndwdth := routeTransitPerf(route)
@@ -1184,27 +1452,19 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcHost, dstHos
 	// No quick network simulation, so make a message wrapper and push the message at the entry
 	// of the host's egress interface
 
-	leadingEdge := networkMsgEdge{stepIdx: 0, route: route, rate: bndwdth, end: false, bit: 0, msgLen: msgLen,
+	nm := networkMsgEdge{stepIdx: 0, route: route, rate: bndwdth, end: false, bit: 0, msgLen: msgLen,
 		flowId: flowId, execId: execId, msg: msg}
 
 	// get identity of egress interface
 	intrfc := intrfcById[(*route)[0].srcIntrfcId]
+	intrfc.faces.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, bndwdth)
+
+	// how long to get through the device to the interface?
+	delay := (float64(msgLen*8) / 1e6) / bndwdth
 
 	// schedule the entry of the leading networkMsgEdge into the first egress interface (from the source host)
-	evtMgr.Schedule(intrfc, leadingEdge, enterEgressIntrfc, vrtime.SecondsToTime(0.0))
-
-	// schedule the entry of the trailing networkMsgEdge into the first egress interface
-	delay := (float64(msgLen) / 1e6) / bndwdth
-
-	// A networkMsgEdge record identifying the end-of-message is scheduled to trail behind the leading edge,
-	// uniformly across the network at a delay equal to the time it takes to push the entire message through
-	// a pipe whose rate is that of 'bndwdth' computed above...the minimum bandwidth across all interfaces, networks, and
-	// wired connections on the route the message takes.
-	trailingEdge := networkMsgEdge{stepIdx: 0, route: route, rate: bndwdth, bit: msgLen*8 - 1, end: true,
-		flowId: flowId, execId: execId, msg: msg}
-
-	// schedule the entry of the trailing networkMsgEdge into the first egress interface (from the source host)
-	evtMgr.Schedule(intrfc, trailingEdge, enterEgressIntrfc, vrtime.SecondsToTime(delay))
+	// once the whole packet has flowed through
+	evtMgr.Schedule(intrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
 
 	return flowId
 }
@@ -1220,23 +1480,32 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 
 	// cast data argument to network message
 	nm := msg.(networkMsgEdge)
+	nm.end = false
 
-	// if this is the trailing edge remove the flow from the device
-	if nm.end {
-		thisDev := intrfc.device
-		thisDev.devRmActive(nm.flowId)
-	}
-
-	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
-
-	// get delay through interface
-	delay := intrfc.state.delay
-
-	// schedule exit from this interface after msg passes through
-	evtMgr.Schedule(egressIntrfc, msg, exitEgressIntrfc, vrtime.SecondsToTime(delay))
+	// remove the flow from the device	
+	thisDev := intrfc.device
+	thisDev.devRmActive(nm.flowId)
 
 	// mark that this flow is passing through the interface
 	intrfc.state.active[nm.flowId] = nm.rate
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
+	thisDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, !nm.end, nm.rate)
+	
+	// get delay through interface and schedule the leading edge arrival at exitEgressIntrfc
+	delay := intrfc.state.delay
+	nm.end = false
+	evtMgr.Schedule(egressIntrfc, nm, exitEgressIntrfc, vrtime.SecondsToTime(delay))
+
+	// make a copy of the networkMsgEdge and set the end bit
+	newEdge := nm
+	newEdge.end = true
+
+	// the trailing edge arrives after a delay comprised of first bit delay, and interface bndwdth
+	passage := float64(nm.msgLen*8)/(1e+6*intrfc.availBndwdth())
+
+	// schedule exit from this interface after msg passes through. 
+	// Note that entire message delivered to exitEgressIntrfc
+	evtMgr.Schedule(egressIntrfc, newEdge, exitEgressIntrfc, vrtime.SecondsToTime(delay+passage))
 
 	// event-handlers are required to return _something_
 	return nil
@@ -1254,23 +1523,33 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	// transitDelay will differentiate between point-to-point wired connection and passage through a network
 	netDelay, net := transitDelay(&nm)
 
-	// if this is a leading edge entering a network, mark it
-	if net != nil && !nm.end {
-		net.netState.active[nm.flowId] = nm.rate
-		net.netState.load += nm.rate
+	rate := net.availBndwdth()
+	if nm.rate > 0.0 {
+		rate = math.Min(rate, nm.rate)
 	}
 
-	// schedule arrival of the networkMsgEdge at the next interface
-	nxtIntrfc := intrfcById[(*nm.route)[nm.stepIdx].dstIntrfcId]
-	evtMgr.Schedule(nxtIntrfc, msg, enterIngressIntrfc, vrtime.SecondsToTime(netDelay))
+	// mark the rate at which the message is traveling
+	nm.rate = rate
 
-	// if the networkMsgEdge marks the last bit, remove it from the interface state
-	if nm.end {
+	// if this is entering a network, mark it
+	if !nm.end {
+		net.netState.active[nm.flowId] = nm.rate
+		net.netState.load += nm.rate
+	} else {
+		// remove flow from those active on the interface
 		_, present := intrfc.state.active[nm.flowId]
 		if present {
 			delete(intrfc.state.active, nm.flowId)
 		}
+		
+		// add to netDelay the bandwidth and message-length-dependent time of transfer.
+		netDelay += float64(nm.msgLen*8)/(rate*1e+6)
 	}
+
+
+	// schedule arrival of the networkMsgEdge at the next interface
+	nxtIntrfc := intrfcById[(*nm.route)[nm.stepIdx].dstIntrfcId]
+	evtMgr.Schedule(nxtIntrfc, msg, enterIngressIntrfc, vrtime.SecondsToTime(netDelay))
 
 	// event-handlers are required to return _something_
 	return nil
@@ -1290,8 +1569,16 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
 
-	// if this is the trailing edge and we have just left a network unmark the flow
-	if nm.end && intrfc.faces != nil {
+	// if the first bit, mark that flow is occupying interface
+	intrfc.state.active[nm.flowId] = nm.rate
+
+	// if this is not the trailing edge, wait until it shows up
+	if !nm.end {
+		return nil
+	}
+
+	// reduce load on network just left 
+	if intrfc.faces != nil {
 		rate, present := intrfc.faces.netState.active[nm.flowId]
 		if present {
 			intrfc.faces.netState.load -= rate
@@ -1302,44 +1589,39 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	// get delay through interface
 	delay := intrfc.state.delay
 
-	// schedule exit from this interface after msg passes through
-	evtMgr.Schedule(ingressIntrfc, msg, exitIngressIntrfc, vrtime.SecondsToTime(delay))
+	// the msg is all together, remark 'end' to be false
+	nm.end = false
 
-	// mark that this flow is passing through the interface
-	intrfc.state.active[nm.flowId] = nm.rate
+	// schedule exit from this interface after msg passes through
+	evtMgr.Schedule(ingressIntrfc, nm, exitIngressIntrfc, vrtime.SecondsToTime(delay))
 
 	// event handlers are required to return _something_
 	return nil
 }
 
-// exitIngressIntrfc is the event handler for the arrival of a message edge at an interface facing the connection
-// through which the networkMsgEdge arrived. If this device is a host and the
-// networkMsgEdge marks the last bit of a message, accept the message at the host
+// exitIngressIntrfc is the event handler for the arrival of a message at an interface facing the connection
+// through which the networkMsgEdge arrived. When this event handler is called the entire 
+// msg is exiting. If this device is a host or filter then accept the message 
 // and push it into the CompPattern Func scheduling system. Otherwise compute the time the edge hits
 // the egress interface on the other side of device and schedule that arrival
 func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) any {
 	intrfc := ingressIntrfc.(*intrfcStruct)
 	nm := msg.(networkMsgEdge)
 
+	// log passage of msg through the interface
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, !nm.end, nm.rate)
 
-	// if it's the last bit take the flow off the active list
+	// take the flow off the active list
+	delete(intrfc.state.active, nm.flowId)
 
-	_, present := intrfc.state.active[nm.flowId]
-	if present {
-		delete(intrfc.state.active, nm.flowId)
-	}
-
+	// log entry of packet into device 	
 	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
 
 	// check whether the device is a host, in which case leave the network if this is the last bit
-	if intrfc.device.devType() == hostCode {
-
-		// now if this is the leading edge we'll wait for the trailing edge to catch up
-		if !nm.end {
-			return nil
-		}
-		// schedule return, where requested
+	devCode := intrfc.device.devType()
+	if  devCode == hostCode || devCode == filterCode {
+		// schedule return into comp pattern system, where requested
+		intrfc.device.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, false, nm.rate)		
 		activePortal.Depart(evtMgr, nm)
 		return nil
 	}
@@ -1347,17 +1629,16 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 	// push the message through the device and to the exgress interface
 	// look up minimal delay through the device, add time for the last bit of message to clear ingress interface
 	thisDev := intrfc.device
-	delay := thisDev.devDelay(nm) + 1.0/intrfc.state.bndwdth
+	delay := thisDev.devDelay(nm) 
 
 	// add this message to the device's active map
 	thisDev.devAddActive(&nm)
+	thisDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, false, nm.rate) 
 
 	// advance position along route
 	nm.stepIdx += 1
 	nxtIntrfc := intrfcById[(*nm.route)[nm.stepIdx].srcIntrfcId]
-	_, nxtTime := evtMgr.Schedule(nxtIntrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
-
-	intrfc.prmDev.LogNetEvent(nxtTime, nm.execId, nm.flowId, false, !nm.end, nm.rate)
+	evtMgr.Schedule(nxtIntrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
 
 	// event scheduler has to return _something_
 	return nil
@@ -1412,9 +1693,9 @@ func routeTransitPerf(route *[]intrfcsToDev) (float64, float64) {
 		latency += dstIntrfc.state.latency
 		latency += network.netState.latency
 
-		bndwdth = math.Min(bndwdth, srcIntrfc.state.bndwdth)
-		bndwdth = math.Min(bndwdth, dstIntrfc.state.bndwdth)
-		bndwdth = math.Min(bndwdth, network.netState.bndwdth)
+		bndwdth = math.Min(bndwdth, srcIntrfc.availBndwdth())
+		bndwdth = math.Min(bndwdth, dstIntrfc.availBndwdth())
+		bndwdth = math.Min(bndwdth, network.availBndwdth())
 	}
 
 	return latency, bndwdth
