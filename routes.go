@@ -4,7 +4,6 @@ package mrnes
 
 import (
 	"fmt"
-	"golang.org/x/exp/slices"
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/path"
 	"gonum.org/v1/gonum/graph/simple"
@@ -200,21 +199,6 @@ func routeFrom(srcId int, edges map[int][]int, dstId int) []int {
 
 type rtEndpts struct {
 	srcId, dstId int
-}
-
-func networkBetween(devA, devB topoDev) string {
-	facedByA := []string{}
-
-	for _, intrfc := range devA.devIntrfcs() {
-		facedByA = append(facedByA, intrfc.faces.name)
-	}
-	for _, intrfc := range devB.devIntrfcs() {
-		if slices.Contains(facedByA, intrfc.faces.name) {
-			return intrfc.faces.name
-		}
-	}
-
-	return ""
 }
 
 // commonNetId checks that intrfcA and intrfcB point at the same network and returns its name

@@ -946,7 +946,7 @@ func checkConnections(tg map[int][]int) bool {
 		if srcType != endptCode && srcType != filterCode {
 			continue
 		}	
-		for dstId, _ := range topoDevById {
+		for dstId := range topoDevById {
 			dstType := dev.devType()
 			if dstType != endptCode && dstType != filterCode {
 				continue

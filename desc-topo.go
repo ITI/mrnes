@@ -119,7 +119,6 @@ func (del *DevExecList) AddTiming(devOp, model string, execTime float64) {
 //
 //	Not currently used at initialization, see if useful for the simulation
 var numberOfIntrfcs int = 0
-var numberOfNetworks int = 0
 var numberOfRouters int = 0
 var numberOfSwitches int = 0
 var numberOfEndpts int = 0
@@ -614,7 +613,6 @@ func CreateNetwork(name, NetScale string, MediaType string) *NetworkFrame {
 
 	objTypeByName[name] = "Network" // object name gets you object type
 	netByName[name] = nf            // network name gets you network frame
-	numberOfNetworks += 1           // one more network
 
 	return nf
 }

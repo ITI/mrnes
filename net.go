@@ -442,7 +442,6 @@ type intrfcStruct struct {
 	media    networkMedia   // media of the network the interface interacts with
 	device   topoDev        // pointer to the device holding the interface
 	prmDev   paramObj       // pointer to the device holding the interface as a paramObj
-	attrib	 string
 	carry    *intrfcStruct  // points to the "other" interface in a connection
 	cable	 *intrfcStruct  // For a wired interface, points to the "other" interface in the connection
 	wireless []*intrfcStruct // For a wired interface, points to the "other" interface in the connection
@@ -623,11 +622,6 @@ func linkIntrfcStruct(intrfcDesc *IntrfcDesc) {
 // availBndwdth returns the interface bandwidth available to a new connection
 func (intrfc *intrfcStruct) availBndwdth(ingress bool) float64 {
 
-	// on a cable the maximum bandwidth is the minimum of the endpoints
-	maxBndwdth := intrfc.state.bndwdth
-	if intrfc.cable != nil {
-		maxBndwdth = math.Min(maxBndwdth, intrfc.cable.state.bndwdth)
-	}
 	if ingress {
 		return math.Max(intrfc.state.bndwdth-intrfc.state.ingressLoad, 0.0)
 	} else {
@@ -871,7 +865,6 @@ type filterState struct {
 	filterAccelerator bool		 // whether there is a crypto accelerator on-board
 	trace   bool                 // switch for calling add trace
 	active  map[int]float64
-	bndwdth float64				 // maximum flow rate allowed through filter
 	load    float64
 	packets int					 // number of packets presently in filter
 }
@@ -1021,7 +1014,6 @@ type endptState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace   bool                 // switch for calling add trace
 	active  map[int]float64
-	bndwdth float64				 // maximum flow rate into/out-of endpoint device
 	load    float64
 	packets int
 }
@@ -1166,11 +1158,9 @@ type switchDev struct {
 
 // The switchState struct holds auxiliary information about the switch
 type switchState struct {
-	execTime float64 // nominal time for a packet to pass through the switch, in seconds
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace    bool    // switch for calling trace saving
 	active   map[int]float64
-	bndwdth float64  // maximum rate rate permitted through switch
 	load     float64
 	packets  int
 }
@@ -1305,11 +1295,9 @@ type routerDev struct {
 
 // The routerState type describes auxiliary information about the router
 type routerState struct {
-	execTime float64             // nominal time for a packet to transit the router
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace    bool                // switch for calling trace saving
 	active   map[int]float64
-	bndwdth  float64             // maximum flow rate through router
 	load     float64
     packets  int
 }
