@@ -6,12 +6,12 @@ package mrnes
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"github.com/iti/evt/evtm"
 	"github.com/iti/evt/vrtime"
 	"github.com/iti/rngstream"
 	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
-	"math"
 	"os"
 	"path"
 )
@@ -27,6 +27,18 @@ type rtnRecord struct {
 type intPair struct {
 	i, j int
 }
+
+type floatPair struct {
+	x, y float64
+}
+
+type networkMsgType int
+const (
+	packet networkMsgType = iota
+	srtFlow 
+	endFlow
+	flowRate	
+)
 
 var routeStepIntrfcs map[intPair]intPair
 
@@ -44,10 +56,12 @@ func getRouteStepIntrfcs(srcId, dstId int) (int, int) {
 
 
 // a NetworkPortal implements the mrnesbits interface used to pass
-// traffice between the application layer and the network sim
+// traffic between the application layer and the network sim
 type NetworkPortal struct {
 	QkNetSim bool
 	returnTo map[int]*rtnRecord
+	lossRtn  map[int]*rtnRecord
+	activeEntry map[intPair]bool
 }
 
 // activePortal remembers the most recent NetworkPortal created
@@ -55,27 +69,38 @@ type NetworkPortal struct {
 var activePortal *NetworkPortal
 
 // CreateNetworkPortal is a constructor, passed a flag indicating which
-// of two network simulation modes to use, and writes the NetworkPortal pointer into a global variable
-func CreateNetworkPortal(qksim bool) *NetworkPortal {
+// of two network simulation modes to use, passes a flag indicating whether
+// packets should be passed whole, and writes the NetworkPortal pointer into a global variable
+func CreateNetworkPortal() *NetworkPortal {
 	if activePortal != nil {
 		return activePortal
 	}
 
 	np := new(NetworkPortal)
-	np.QkNetSim = qksim
+
+	// set default settings
+	np.QkNetSim = true
 	np.returnTo = make(map[int]*rtnRecord)
+	np.lossRtn  = make(map[int]*rtnRecord)
+	np.activeEntry = make(map[intPair]bool)
 	activePortal = np
 
 	return np
 }
 
-// HostCPU helps NetworkPortal implement the mrnesbits NetworkPortal interface,
-// returning the CPU type associated with a named host.  Present because the
+// SetQkNetSim assigns a boolean to the network portal to indicate whether or not
+// the 'quicksim' option should be applied
+func (np *NetworkPortal) SetQkNetSim(qknetsim bool) {
+	np.QkNetSim = qknetsim
+}
+
+// EndptCPU helps NetworkPortal implement the mrnesbits NetworkPortal interface,
+// returning the CPU type associated with a named endpt.  Present because the
 // application layer does not otherwise have visibility into the network topology
-func (np *NetworkPortal) HostCPU(devName string) string {
-	host, present := hostDevByName[devName]
+func (np *NetworkPortal) EndptCPU(devName string) string {
+	endpt, present := endptDevByName[devName]
 	if present {
-		return host.hostCPU
+		return endpt.endptCPU
 	}	
 	filter, present := filterDevByName[devName]
 	if present {
@@ -86,28 +111,60 @@ func (np *NetworkPortal) HostCPU(devName string) string {
 
 // Depart is called to return an application message being carried through
 // the network back to the application layer
-func (np *NetworkPortal) Depart(evtMgr *evtm.EventManager, nm networkMsgEdge) {
-	flowId := nm.flowId
-	np.returnTo[flowId].count -= 1
+func (np *NetworkPortal) Depart(evtMgr *evtm.EventManager, nm networkMsg) {
+	connectId := nm.connectId
+	np.returnTo[connectId].count -= 1
 
-	rtnRec := np.returnTo[flowId]
+	rtnRec := np.returnTo[connectId]
 	rtnCxt := rtnRec.rtnCxt
 	rtnFunc := rtnRec.rtnFunc
 
 	// schedule the re-integration into the application simulator
 	evtMgr.Schedule(rtnCxt, nm.msg, rtnFunc, vrtime.SecondsToTime(0.0))
-	if np.returnTo[flowId].count == 0 {
-		delete(np.returnTo, flowId)
+	if np.returnTo[connectId].count == 0 {
+		delete(np.returnTo, connectId)
+		delete(np.lossRtn, connectId)
 	}
 }
 
 // Arrive is called at the point an application message is received by the network
-// and a new flowId is created to track it.  It saves information needed to re-integrate
+// and a new connectId is created to track it.  It saves information needed to re-integrate
 // the application message into the application layer when the message arrives at its destination
-func (np *NetworkPortal) Arrive(flowId int, rtnCxt any, rtnFunc evtm.EventHandlerFunction) {
-	rtnRec := &rtnRecord{count: 1, rtnFunc: rtnFunc, rtnCxt: rtnCxt}
-	np.returnTo[flowId] = rtnRec
+func (np *NetworkPortal) Arrive(rtnCxt any, rtnFunc evtm.EventHandlerFunction, 
+		lossCxt any, lossFunc evtm.EventHandlerFunction) int {
+	rtnRec := &rtnRecord{count: 1, rtnFunc: rtnFunc, rtnCxt: rtnCxt} 
+	connectId := nxtConnectId()
+	np.returnTo[connectId] = rtnRec
+	lossRec := &rtnRecord{count: 1, rtnFunc: lossFunc, rtnCxt: lossCxt} 
+	np.lossRtn[connectId] = lossRec
+	return connectId
 }
+
+// lostConnection is called when a connection is lost by the network layer.
+// The response is to remove the connection from the portal's table, and
+// call the event handler passed in to deal with lost connections
+func (np *NetworkPortal) lostConnection(evtMgr *evtm.EventManager, nm *networkMsg, connectId int) {
+	_, present := np.returnTo[connectId]
+	if !present {
+		return
+	}
+	delete(np.returnTo, connectId)
+
+	_, present = np.lossRtn[connectId]
+	if !present {
+		return
+	}
+
+	lossRec := np.lossRtn[connectId]
+	lossCxt := lossRec.rtnCxt
+	lossFunc := lossRec.rtnFunc
+
+	// schedule the re-integration into the application simulator
+	evtMgr.Schedule(lossCxt, nm.msg, lossFunc, vrtime.SecondsToTime(0.0))
+
+	// remove lossRtn entry		
+	delete(np.lossRtn, connectId)
+} 
 
 // a TraceRecord saves information about the visitation of a message to some point in the simulation.
 // saved for post-run analysis
@@ -116,12 +173,11 @@ type TraceRecord struct {
 	Ticks    int64   // ticks variable of time
 	Priority int64   // priority field of time-stamp
 	ExecId   int     // integer identifier identifying the chain of traces this is part of
-	FlowId   int     // integer identifier of the network flow
+	ConnectId int    // integer identifier of the network connection
 	ObjId    int     // integer id for object being referenced
-	ObjType  string  // "host", "switch", "interface", "router"
-	ObjEntry bool    // true if the recorded trace is entering an object
-	MsgEntry bool    // true if the trace is the leading edge of the message, false otherwise
-	Rate     float64 // rate associated with the flow
+	Op		 string  // "start", "stop", "enter", "exit"
+	Packet   bool    // true if the event marks the passage of a packet (rather than flow)
+	Rate     float64 // rate associated with the connection
 }
 
 // NameType is a an entry in a dictionary created for a trace
@@ -167,16 +223,12 @@ func (tm *TraceManager) Active() bool {
 
 
 // AddTrace creates a record of the trace using its calling arguments, and stores it
-func (tm *TraceManager) AddTrace(vrt vrtime.Time, execId, flowId, objId int, objType string,
-	objEntry, msgEntry bool, rate float64) {
+func (tm *TraceManager) AddTrace(vrt vrtime.Time, execId, connectId, objId int, op string,
+	isPckt bool, rate float64) {
 
 	// return if we aren't using the trace manager
 	if !tm.InUse {
 		return
-	}
-
-	if execId == 0 {
-		fmt.Println("execId is zero")
 	}
 
 	_, present := tm.Traces[execId]
@@ -185,16 +237,20 @@ func (tm *TraceManager) AddTrace(vrt vrtime.Time, execId, flowId, objId int, obj
 	}
 
 	// create and add the trace record
-	vmr := TraceRecord{Time: vrt.Seconds(), Ticks: vrt.Ticks(), Priority: vrt.Pri(), FlowId: flowId,
-		ExecId: execId, ObjType: objType, ObjId: objId, ObjEntry: objEntry, MsgEntry: msgEntry, Rate: rate}
+	vmr := TraceRecord{Time: vrt.Seconds(), Ticks: vrt.Ticks(), Priority: vrt.Pri(), ConnectId: connectId,
+		ExecId: execId, ObjId: objId, Op: op, Packet: isPckt, Rate: rate}
 
 	tm.Traces[execId] = append(tm.Traces[execId], vmr)
 }
 
 // AddName is used to add an element to the id -> (name,type) dictionary for the trace file
-func (tm *TraceManager) AddName(id int, name string, objType string) {
+func (tm *TraceManager) AddName(id int, name string, objDesc string) {
 	if tm.InUse {
-		tm.NameById[id] = NameType{Name: name, Type: objType}
+		_, present := tm.NameById[id]
+		if present {
+			panic("duplicated id in AddName")
+		}
+		tm.NameById[id] = NameType{Name: name, Type: objDesc}
 	}
 }
 
@@ -234,7 +290,7 @@ func (tm *TraceManager) WriteToFile(filename string) bool {
 type devCode int
 
 const (
-	hostCode devCode = iota
+	endptCode devCode = iota
 	switchCode
 	routerCode
 	filterCode
@@ -244,8 +300,8 @@ const (
 // devCodefromStr returns the devCode corresponding to an string name for it
 func devCodeFromStr(code string) devCode {
 	switch code {
-	case "Host", "host":
-		return hostCode
+	case "Endpt", "endpt":
+		return endptCode
 	case "Switch", "switch":
 		return switchCode
 	case "Router", "router", "rtr":
@@ -260,8 +316,8 @@ func devCodeFromStr(code string) devCode {
 // devCodeToStr returns a string corresponding to an input devCode for it
 func devCodeToStr(code devCode) string {
 	switch code {
-	case hostCode:
-		return "Host"
+	case endptCode:
+		return "Endpt"
 	case switchCode:
 		return "Switch"
 	case routerCode:
@@ -346,11 +402,11 @@ func netMediaFromStr(media string) networkMedia {
 	}
 }
 
-var flowId int = 0
+var connectId int = 0
 
-func nxtFlowId() int {
-	flowId += 1
-	return flowId
+func nxtConnectId() int {
+	connectId += 1
+	return connectId
 }
 
 // the topDev interface specifies the functionality different device types provide
@@ -358,22 +414,23 @@ type topoDev interface {
 	devName() string              // every device has a unique name
 	devId() int                   // every device has a unique integer id
 	devType() devCode             // every device is one of the devCode types
-	devIntrfcs() []*intrfcStruct  // we can get from devices a list of the interfaces they host, if any
+	devIntrfcs() []*intrfcStruct  // we can get from devices a list of the interfaces they endpt, if any
 	devDelay(any) float64         // every device can be be queried for the delay it introduces for an operation
 	devState() any                // every device as a structure of state that can be accessed
-	devAddActive(*networkMsgEdge) // add the flowId argument to the device's list of active flows
-	devRmActive(int)              // remove the flowId argument to the device's list of active flows
-	LogNetEvent(vrtime.Time, int, int, bool, bool, float64)
+	devRng() *rngstream.RngStream // every device has its own RNG stream 
+	devAddActive(*networkMsg) // add the connectId argument to the device's list of active connections
+	devRmActive(int)              // remove the connectId argument to the device's list of active connections
+	LogNetEvent(vrtime.Time, int, int, string, bool, float64)
 }
 
 // ParamContainer interface is satisfied by every network object that
 // can be configured at run-time with performance parameters. These
-// are intrfcStruct, networkStruct, switchDev, hostDev, routerDev
+// are intrfcStruct, networkStruct, switchDev, endptDev, routerDev
 type paramObj interface {
 	matchParam(string, string) bool
 	setParam(string, valueStruct)
 	paramObjName() string
-	LogNetEvent(vrtime.Time, int, int, bool, bool, float64)
+	LogNetEvent(vrtime.Time, int, int, string, bool, float64)
 }
 
 // The intrfcStruct holds information about a network interface embedded in a device
@@ -401,7 +458,10 @@ type intrfcState struct {
 	delay	   float64         // time the leading bit takes to traverse the interface
 	mtu		   int             // maximum packet size (bytes)
 	trace      bool            // switch for calling add trace
-	active     map[int]float64 // id of a flow actively passing through the interface, and its bandwidth
+	active     map[int]float64 // id of a connection actively passing through the interface, and its bandwidth
+	ingressLoad	   float64
+	egressLoad	   float64
+	packets	   int
 }
 
 func createIntrfcState() *intrfcState {
@@ -412,6 +472,9 @@ func createIntrfcState() *intrfcState {
 	iss.latency = 1e+6
 	iss.mtu = 1500  // in bytes Set for Ethernet2 MTU, should change if wireless
 	iss.active = make(map[int]float64)
+	iss.ingressLoad = 0.0
+	iss.egressLoad = 0.0
+	iss.packets = 0
 	iss.trace = false
 	return iss
 }
@@ -430,8 +493,8 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 
 	// desc representation codes the device type as a string
 	switch intrfc.DevType {
-	case "Host":
-		is.devType = hostCode
+	case "Endpt":
+		is.devType = endptCode
 	case "Router":
 		is.devType = routerCode
 	case "Switch":
@@ -440,7 +503,7 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 		is.devType = filterCode
 	}
 
-	// The desc description gives the name of the device hosting the interface.
+	// The desc description gives the name of the device endpting the interface.
 	// We can use this to look up the locally constructed representation of the device
 	// and save a pointer to it
 	is.device = topoDevByName[intrfc.Device]
@@ -462,11 +525,19 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 	return is
 }
 
+func (intrfc *intrfcStruct) congested(ingress bool) bool {
+	load := intrfc.state.ingressLoad
+	if !ingress {
+		load = intrfc.state.egressLoad
+	}
+	return math.Abs(load-intrfc.state.bndwdth) < 1e-3
+}
+
 // matchParam is used to determine whether a run-time parameter description
 // should be applied to the interface. Its definition here helps intrfcStruct satisfy
 // paramObj interface.  To apply or not to apply depends in part on whether the
 // attribute given matchParam as input matches what the interface has. The
-// interface attributes that can be tested are the device type of device that hosts it, and the
+// interface attributes that can be tested are the device type of device that endpts it, and the
 // media type of the network it interacts with
 func (intrfc *intrfcStruct) matchParam(attrbName, attrbValue string) bool {
 	switch attrbName {
@@ -476,6 +547,8 @@ func (intrfc *intrfcStruct) matchParam(attrbName, attrbValue string) bool {
 			return slices.Contains(intrfc.groups, attrbValue)
 		case "media":
 			return netMediaFromStr(attrbValue) == intrfc.media
+		case "device":
+			return intrfc.device.devName() == attrbValue
 	}
 
 	// an error really, as we should match only the names given in the switch statement above
@@ -505,11 +578,11 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 	}
 }
 
-func (intrfc *intrfcStruct) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+func (intrfc *intrfcStruct) LogNetEvent(time vrtime.Time, execId int, connectId int, op string, isPckt bool, rate float64) {
 	if !intrfc.state.trace {
 		return
 	}
-	devTraceMgr.AddTrace(time, execId, flowId, intrfc.number, "interface", objEntry, msgEntry, rate)
+	devTraceMgr.AddTrace(time, execId, connectId, intrfc.number, op, isPckt, rate)
 }
 
 // paramObjName helps intrfcStruct satisfy paramObj interface, returns interface name
@@ -547,9 +620,19 @@ func linkIntrfcStruct(intrfcDesc *IntrfcDesc) {
 	}
 }
 
-// availBndwdth returns the interface bandwidth available to a new flow
-func (intrfc *intrfcStruct) availBndwdth() float64 {
-	return intrfc.state.bndwdth
+// availBndwdth returns the interface bandwidth available to a new connection
+func (intrfc *intrfcStruct) availBndwdth(ingress bool) float64 {
+
+	// on a cable the maximum bandwidth is the minimum of the endpoints
+	maxBndwdth := intrfc.state.bndwdth
+	if intrfc.cable != nil {
+		maxBndwdth = math.Min(maxBndwdth, intrfc.cable.state.bndwdth)
+	}
+	if ingress {
+		return math.Max(intrfc.state.bndwdth-intrfc.state.ingressLoad, 0.0)
+	} else {
+		return math.Max(intrfc.state.bndwdth-intrfc.state.egressLoad, 0.0)
+	}
 }
 
 // A networkStruct holds the attributes of one of the model's communication subnetworks
@@ -562,18 +645,20 @@ type networkStruct struct {
 	netRouters    []*routerDev       // list of pointers to routerDevs with interfaces that face this subnetwork
 	netSwitches   []*switchDev       // list of pointers to routerDevs with interfaces that face this subnetwork
 	netFilters    []*filterDev       // list of pointers to routerDevs with interfaces that face this subnetwork
-	netHosts      []*hostDev       // list of pointers to routerDevs with interfaces that face this subnetwork
+	netEndpts      []*endptDev       // list of pointers to routerDevs with interfaces that face this subnetwork
 	netState      *networkState      // pointer to a block of information comprising the network 'state'
 }
 
 // A networkState struct holds some static and dynamic information about the network's current state
 type networkState struct {
 	latency float64         // latency through network (without considering explicitly declared wired connections) under no load
-	load    float64         // real-time value of total load (in units of Mbytes/sec)
 	bndwdth float64         // maximum bandwidth between any two routers in network
 	capacity float64        // maximum traffic capacity of network
 	trace   bool            // switch for calling trace saving
-	active  map[int]float64 // keep track of flows through the network
+	rngstrm *rngstream.RngStream
+	active  map[int]float64 // keep track of connections through the network
+	load    float64         // real-time value of total load (in units of Mbytes/sec)
+	packets int				// number of packets actively passing in network
 }
 
 // initNetworkStruct transforms information from the desc description
@@ -591,11 +676,11 @@ func (ns *networkStruct) initNetworkStruct(nd *NetworkDesc) {
 		ns.addRouter(routerDevByName[rtrName])
 	}
 	
-	ns.netHosts = make([]*hostDev, 0)
-	for _, hostName := range nd.Hosts {
+	ns.netEndpts = make([]*endptDev, 0)
+	for _, endptName := range nd.Endpts {
 		// use the router name from the desc representation to find the run-time pointer
 		// to the router and append to the network's list
-		ns.addHost(hostDevByName[hostName])
+		ns.addEndpt(endptDevByName[endptName])
 	}
 
 	ns.netFilters = make([]*filterDev, 0)
@@ -636,15 +721,36 @@ func createNetworkStruct(nd *NetworkDesc) *networkStruct {
 	// initialize the Router lists, to be filled in by
 	// initNetworkStruct after the router constructors are called
 	ns.netRouters = make([]*routerDev, 0)
-	ns.netHosts  = make([]*hostDev, 0)
+	ns.netEndpts  = make([]*endptDev, 0)
 	ns.netFilters = make([]*filterDev, 0)
 	
 	// make the state structure, will flesh it out from run-time configuration parameters
-	ns.netState = new(networkState)
-	ns.netState.active = make(map[int]float64)
-
+	ns.netState = createNetworkState(ns.name) 
 	return ns
 }
+
+// createNetworkState constructs the data for a networkState struct
+func createNetworkState(name string) *networkState {
+	ns := new(networkState)
+	ns.active = make(map[int]float64)
+	ns.load = 0.0
+	ns.packets = 0
+	ns.active  = make(map[int]float64) 
+	ns.rngstrm = rngstream.New(name)
+	return ns
+}
+
+// netLatency estimates the time required by a message to traverse the network,
+// optionally as a function of the load.  This approximation is the mean time in system
+// for an M/M/1 queue: (1/mu)/(1-rho).  
+
+func (net *networkStruct) netLatency() float64 {
+	rho := net.netState.load/net.netState.capacity
+	rho = math.Min(rho,0.99)
+	m := net.netState.latency/(1.0-rho)
+	return m
+}
+
 
 // matchParam is used to determine whether a run-time parameter description
 // should be applied to the network. Its definition here helps networkStruct satisfy
@@ -692,12 +798,11 @@ func (ns *networkStruct) paramObjName() string {
 	return ns.name
 }
 
-func (ns *networkStruct) LogNetEvent(time vrtime.Time, execId int, flowId int,
-	objEntry, msgEntry bool, rate float64) {
+func (ns *networkStruct) LogNetEvent(time vrtime.Time, execId int, connectId int, op string,  isPckt bool, rate float64) {
 	if !ns.netState.trace {
 		return
 	}
-	devTraceMgr.AddTrace(time, execId, flowId, ns.number, "network", objEntry, msgEntry, rate)
+	devTraceMgr.AddTrace(time, execId, connectId, ns.number, op, isPckt, rate)
 }
 
 // addRouter includes the router given as input parameter on the network list of routers that face it
@@ -711,15 +816,15 @@ func (ns *networkStruct) addRouter(newrtr *routerDev) {
 	ns.netRouters = append(ns.netRouters, newrtr)
 }
 
-// addHost includes the host given as input parameter on the network list of hosts that face it
-func (ns *networkStruct) addHost(newhost *hostDev) {
-	// skip if host already exists in network netHosts list
-	for _, host := range ns.netHosts {
-		if host == newhost || host.hostName == newhost.hostName {
+// addEndpt includes the endpt given as input parameter on the network list of endpts that face it
+func (ns *networkStruct) addEndpt(newendpt *endptDev) {
+	// skip if endpt already exists in network netEndpts list
+	for _, endpt := range ns.netEndpts {
+		if endpt == newendpt || endpt.endptName == newendpt.endptName {
 			return
 		}
 	}
-	ns.netHosts = append(ns.netHosts, newhost)
+	ns.netEndpts = append(ns.netEndpts, newendpt)
 }
 
 // addFilter includes the filter given as input parameter on the network list of filters that face it
@@ -744,9 +849,9 @@ func (ns *networkStruct) addSwitch(newswtch *switchDev) {
 	ns.netSwitches = append(ns.netSwitches, newswtch)
 }
 
-// netBndwdth returns the current bandwidth available for a new flow
+// netBndwdth returns the current bandwidth available for a new connection
 func (ns *networkStruct) availBndwdth() float64 {
-	return ns.netState.bndwdth
+	return math.Max(ns.netState.bndwdth-ns.netState.load, 0.0)
 }
 
 // a filterDev holds information about a filter
@@ -757,15 +862,18 @@ type filterDev struct {
 	filterGroups	[]string        // list of groups to which filter belongs
 	filterId        int             // unique integer id
 	filterIntrfcs   []*intrfcStruct // list of network interfaces embedded in the filter
-	filterState     *filterDevState   // a struct holding filter state
+	filterState     *filterState   // a struct holding filter state
 }
 
-// a filterDevState holds extra informat used by the filter
-type filterDevState struct {
+// a filterState holds extra informat used by the filter
+type filterState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	filterAccelerator bool		 // whether there is a crypto accelerator on-board
 	trace   bool                 // switch for calling add trace
 	active  map[int]float64
+	bndwdth float64				 // maximum flow rate allowed through filter
+	load    float64
+	packets int					 // number of packets presently in filter
 }
 
 // matchParam is for other paramObj objects a method for seeing whether
@@ -817,21 +925,24 @@ func createFilterDev(filterDesc *FilterDesc) *filterDev {
 	filter.filterId = nxtId()                       // unique integer id, generated at model load-time
 	filter.filterIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
 	filter.filterGroups = filterDesc.Groups
-	filter.filterState = new(filterDevState)          // creation of state block, to be augmented later
-	filter.filterState.active = make(map[int]float64)
-	filter.filterState.trace = false
+	filter.filterState = createFilterState(filter.filterName)
 	return filter
+}
+
+func createFilterState(name string) *filterState {
+	fs := new(filterState)
+	fs.active = make(map[int]float64)
+	fs.trace = false
+	fs.active = make(map[int]float64)
+	fs.load = 0.0
+	fs.packets = 0
+	fs.rngstrm = rngstream.New(name)
+	return fs
 }
 
 // addIntrfc appends the input intrfcStruct to the list of interfaces embedded in the filter.
 func (filter *filterDev) addIntrfc(intrfc *intrfcStruct) {
 	filter.filterIntrfcs = append(filter.filterIntrfcs, intrfc)
-}
-
-// rng returns a pointer to the random number stream used by all functions on the filter
-func (filter *filterDev) rng() *rngstream.RngStream {
-	fds := filter.filterState
-	return fds.rngstrm
 }
 
 // rng resturns the string type description of the CPU running the filter
@@ -864,21 +975,26 @@ func (filter *filterDev) devState() any {
 	return filter.filterState
 }
 
-func (filter *filterDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+// devRng returns a pointer to the filter's rng point, as part of the topoDev interface
+func (filter *filterDev) devRng() *rngstream.RngStream {
+	return filter.filterState.rngstrm
+}
+
+func (filter *filterDev) LogNetEvent(time vrtime.Time, execId int, connectId int, op string, isPckt bool, rate float64) {
 	if !filter.filterState.trace {
 		return
 	}
-	devTraceMgr.AddTrace(time, execId, flowId, filter.filterId, "filter", objEntry, msgEntry, rate)
+	devTraceMgr.AddTrace(time, execId, connectId, filter.filterId, op, isPckt, rate)
 }
 
-// devAddActive adds an active flow, as part of the topoDev interface.  Not used for filters, yet
-func (filter *filterDev) devAddActive(nme *networkMsgEdge) {
-	filter.filterState.active[nme.flowId] = nme.rate
+// devAddActive adds an active connection, as part of the topoDev interface.  Not used for filters, yet
+func (filter *filterDev) devAddActive(nme *networkMsg) {
+	filter.filterState.active[nme.connectId] = nme.rate
 }
 
-// devRmActive removes an active flow, as part of the topoDev interface.  Not used for filters, yet
-func (filter *filterDev) devRmActive(flowId int) {
-	delete(filter.filterState.active, flowId)
+// devRmActive removes an active connection, as part of the topoDev interface.  Not used for filters, yet
+func (filter *filterDev) devRmActive(connectId int) {
+	delete(filter.filterState.active, connectId)
 }
 
 // devDelay returns the state-dependent delay for passage through the device, as part of the topoDev interface.
@@ -887,138 +1003,154 @@ func (filter *filterDev) devDelay(arg any) float64 {
 	return 0.0
 }
 
-// a hostDev holds information about a host
-type hostDev struct {
-	hostName      string          // unique name
-	hostGroups	  []string		  // list of groups to which host belongs
-	hostCPU		  string          // type of CPU the host uses
-	hostModel     string          // unique name
-	hostId        int             // unique integer id
-	hostIntrfcs   []*intrfcStruct // list of network interfaces embedded in the host
-	hostState     *hostDevState   // a struct holding host state
+// a endptDev holds information about a endpt
+type endptDev struct {
+	endptName      string          // unique name
+	endptGroups	  []string		  // list of groups to which endpt belongs
+	endptCPU	  string          // type of CPU the endpt uses
+	endptEUD	   bool
+	endptCores     int
+	endptModel     string          // unique name
+	endptId        int             // unique integer id
+	endptIntrfcs   []*intrfcStruct // list of network interfaces embedded in the endpt
+	endptState     *endptState   // a struct holding endpt state
 }
 
-// a hostDevState holds extra informat used by the host
-type hostDevState struct {
+// a endptState holds extra informat used by the endpt
+type endptState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace   bool                 // switch for calling add trace
 	active  map[int]float64
+	bndwdth float64				 // maximum flow rate into/out-of endpoint device
+	load    float64
+	packets int
 }
 
 // matchParam is for other paramObj objects a method for seeing whether
-// the device attribute matches the input.  'cept the hostDev is not declared
-// to have any such attributes, so this function (included to let hostDev be
-// a paramObj) returns false.  Included to allow hostDev to satisfy paramObj interface requirements
-func (host *hostDev) matchParam(attrbName, attrbValue string) bool {
+// the device attribute matches the input.  'cept the endptDev is not declared
+// to have any such attributes, so this function (included to let endptDev be
+// a paramObj) returns false.  Included to allow endptDev to satisfy paramObj interface requirements
+func (endpt *endptDev) matchParam(attrbName, attrbValue string) bool {
 	switch attrbName {
 		case "name":
-			return host.hostName == attrbValue
+			return endpt.endptName == attrbValue
 		case "group":
-			return slices.Contains(host.hostGroups, attrbValue)
+			return slices.Contains(endpt.endptGroups, attrbValue)
 		case "model":
-			return host.hostModel == attrbValue
+			return endpt.endptModel == attrbValue
 		case "CPU":
-			return host.hostCPU == attrbValue
+			return endpt.endptCPU == attrbValue
 	}
 
 	// an error really, as we should match only the names given in the switch statement above
 	return false
 }
 
-// setParam gives a value to a hostDev parameter.  The design allows only
+// setParam gives a value to a endptDev parameter.  The design allows only
 // the CPU parameter to be set, which is allowed here
-func (host *hostDev) setParam(param string, value valueStruct) {
+func (endpt *endptDev) setParam(param string, value valueStruct) {
 	switch param {
 		case "CPU":
-			host.hostCPU = value.stringValue
+			endpt.endptCPU = value.stringValue
 		case "trace":
-			host.hostState.trace = value.boolValue
+			endpt.endptState.trace = value.boolValue
 		case "model":
-			host.hostModel = value.stringValue
+			endpt.endptModel = value.stringValue
 	}
 }
 
-// paramObjName helps hostDev satisfy paramObj interface, returns the host's name
-func (host *hostDev) paramObjName() string {
-	return host.hostName
+// paramObjName helps endptDev satisfy paramObj interface, returns the endpt's name
+func (endpt *endptDev) paramObjName() string {
+	return endpt.endptName
 }
 
-// createHostDev is a constructor, using information from the desc description of the host
-func createHostDev(hostDesc *HostDesc) *hostDev {
-	host := new(hostDev)
-	host.hostName = hostDesc.Name               // unique name
-	host.hostModel = hostDesc.Model             
-	host.hostCPU = hostDesc.CPU			
-	host.hostId = nxtId()                       // unique integer id, generated at model load-time
-	host.hostIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
-	host.hostGroups = hostDesc.Groups
-	host.hostState = new(hostDevState)          // creation of state block, to be augmented later
-	host.hostState.active = make(map[int]float64)
-	host.hostState.trace = false
-	return host
+// createEndptDev is a constructor, using information from the desc description of the endpt
+func createEndptDev(endptDesc *EndptDesc) *endptDev {
+	endpt := new(endptDev)
+	endpt.endptName = endptDesc.Name               // unique name
+	endpt.endptModel = endptDesc.Model             
+	endpt.endptCPU = endptDesc.CPU			
+	endpt.endptEUD = endptDesc.EUD
+	endpt.endptCores = endptDesc.Cores
+	endpt.endptId = nxtId()                       // unique integer id, generated at model load-time
+	endpt.endptIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
+	endpt.endptGroups = endptDesc.Groups
+	endpt.endptState = createEndptState(endpt.endptName) // creation of state block, to be augmented later
+	return endpt
 }
 
-// addIntrfc appends the input intrfcStruct to the list of interfaces embedded in the host.
-func (host *hostDev) addIntrfc(intrfc *intrfcStruct) {
-	host.hostIntrfcs = append(host.hostIntrfcs, intrfc)
+// createEndptState constructs the data for the endpoint state
+func createEndptState(name string) *endptState {
+	eps := new(endptState)
+	eps.active = make(map[int]float64)
+	eps.load = 0.0
+	eps.packets = 0
+	eps.trace = false
+	eps.rngstrm = rngstream.New(name)
+	return eps
 }
 
-// rng returns a pointer to the random number stream used by all functions on the host
-func (host *hostDev) rng() *rngstream.RngStream {
-	hds := host.hostState
-	return hds.rngstrm
+// addIntrfc appends the input intrfcStruct to the list of interfaces embedded in the endpt.
+func (endpt *endptDev) addIntrfc(intrfc *intrfcStruct) {
+	endpt.endptIntrfcs = append(endpt.endptIntrfcs, intrfc)
 }
 
-// rng resturns the string type description of the CPU running the host
-func (host *hostDev) CPU() string {
-	return host.hostCPU
+// rng resturns the string type description of the CPU running the endpt
+func (endpt *endptDev) CPU() string {
+	return endpt.endptCPU
 }
 
-// devName returns the host name, as part of the topoDev interface
-func (host *hostDev) devName() string {
-	return host.hostName
+// devName returns the endpt name, as part of the topoDev interface
+func (endpt *endptDev) devName() string {
+	return endpt.endptName
 }
 
-// devId returns the host integer id, as part of the topoDev interface
-func (host *hostDev) devId() int {
-	return host.hostId
+// devId returns the endpt integer id, as part of the topoDev interface
+func (endpt *endptDev) devId() int {
+	return endpt.endptId
 }
 
-// devType returns the host's device type, as part of the topoDev interface
-func (host *hostDev) devType() devCode {
-	return hostCode
+// devType returns the endpt's device type, as part of the topoDev interface
+func (endpt *endptDev) devType() devCode {
+	return endptCode
 }
 
-// devIntrfcs returns the host's list of interfaces, as part of the topoDev interface
-func (host *hostDev) devIntrfcs() []*intrfcStruct {
-	return host.hostIntrfcs
+// devIntrfcs returns the endpt's list of interfaces, as part of the topoDev interface
+func (endpt *endptDev) devIntrfcs() []*intrfcStruct {
+	return endpt.endptIntrfcs
 }
 
-// devState returns the host's state struct, as part of the topoDev interface
-func (host *hostDev) devState() any {
-	return host.hostState
+// devState returns the endpt's state struct, as part of the topoDev interface
+func (endpt *endptDev) devState() any {
+	return endpt.endptState
 }
 
-func (host *hostDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
-	if !host.hostState.trace {
+// devRng returns the endpt's rng pointer, as part of the topoDev interface
+func (endpt *endptDev) devRng() *rngstream.RngStream {
+	return endpt.endptState.rngstrm
+}
+
+func (endpt *endptDev) LogNetEvent(time vrtime.Time, execId int, connectId int, op string, isPckt bool, rate float64) {
+
+	if !endpt.endptState.trace {
 		return
 	}
-	devTraceMgr.AddTrace(time, execId, flowId, host.hostId, "host", objEntry, msgEntry, rate)
+	devTraceMgr.AddTrace(time, execId, connectId, endpt.endptId, op, isPckt, rate)
 }
 
-// devAddActive adds an active flow, as part of the topoDev interface.  Not used for hosts, yet
-func (host *hostDev) devAddActive(nme *networkMsgEdge) {
-	host.hostState.active[nme.flowId] = nme.rate
+// devAddActive adds an active connection, as part of the topoDev interface.  Not used for endpts, yet
+func (endpt *endptDev) devAddActive(nme *networkMsg) {
+	endpt.endptState.active[nme.connectId] = nme.rate
 }
 
-// devRmActive removes an active flow, as part of the topoDev interface.  Not used for hosts, yet
-func (host *hostDev) devRmActive(flowId int) {
-	delete(host.hostState.active, flowId)
+// devRmActive removes an active connection, as part of the topoDev interface.  Not used for endpts, yet
+func (endpt *endptDev) devRmActive(connectId int) {
+	delete(endpt.endptState.active, connectId)
 }
 
 // devDelay returns the state-dependent delay for passage through the device, as part of the topoDev interface.
-// Not really applicable to host, so zero is returned
-func (host *hostDev) devDelay(arg any) float64 {
+// Not really applicable to endpt, so zero is returned
+func (endpt *endptDev) devDelay(arg any) float64 {
 	return 0.0
 }
 
@@ -1029,15 +1161,18 @@ type switchDev struct {
 	switchModel   string          // model name, used to identify performance characteristics
 	switchId      int             // unique integer id, generated at model-load time
 	switchIntrfcs []*intrfcStruct // list of network interfaces embedded in the switch
-	switchState   *switchDevState // pointer to the switch's state struct
+	switchState   *switchState // pointer to the switch's state struct
 }
 
-// The switchDevState struct holds auxiliary information about the switch
-type switchDevState struct {
+// The switchState struct holds auxiliary information about the switch
+type switchState struct {
 	execTime float64 // nominal time for a packet to pass through the switch, in seconds
-	buffer   float64 // buffer capacity within switch, in Mbytes
+	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace    bool    // switch for calling trace saving
 	active   map[int]float64
+	bndwdth float64  // maximum rate rate permitted through switch
+	load     float64
+	packets  int
 }
 
 // createSwitchDev is a constructor, initializing a run-time representation of a switch from its desc description
@@ -1048,10 +1183,19 @@ func createSwitchDev(switchDesc *SwitchDesc) *switchDev {
 	swtch.switchId = nxtId()
 	swtch.switchIntrfcs = make([]*intrfcStruct, 0)
 	swtch.switchGroups = switchDesc.Groups
-	swtch.switchState = new(switchDevState)
-	swtch.switchState.active = make(map[int]float64)
-	swtch.switchState.trace = false
+	swtch.switchState = createSwitchState(swtch.switchName)
 	return swtch
+}
+
+// createSwitchState constructs data structures for the switch's state
+func createSwitchState(name string) *switchState {
+	ss := new(switchState)
+	ss.active = make(map[int]float64)
+	ss.load = 0.0
+	ss.packets = 0
+	ss.trace = false
+	ss.rngstrm = rngstream.New(name)
+	return ss
 }
 
 // matchParam is used to determine whether a run-time parameter description
@@ -1079,8 +1223,6 @@ func (swtch *switchDev) setParam(param string, value valueStruct) {
 	switch param {
 	case "model":
 		swtch.switchModel = value.stringValue
-	case "buffer":
-		swtch.switchState.buffer = value.floatValue
 	case "trace":
 		swtch.switchState.trace = value.boolValue
 	}
@@ -1121,30 +1263,34 @@ func (swtch *switchDev) devState() any {
 	return swtch.switchState
 }
 
-// devAddActive adds a flow id to the list of active flows through the switch, as part of the topoDev interface
-func (swtch *switchDev) devAddActive(nme *networkMsgEdge) {
-	swtch.switchState.active[nme.flowId] = nme.rate
+// devRng returns the switch's rng pointer, as part of the topoDev interface
+func (swtch *switchDev) devRng() *rngstream.RngStream {
+	return swtch.switchState.rngstrm
 }
 
-// devRmActive removes a flow id to the list of active flows through the switch, as part of the topoDev interface
-func (swtch *switchDev) devRmActive(flowId int) {
-	delete(swtch.switchState.active, flowId)
+// devAddActive adds a connection id to the list of active connections through the switch, as part of the topoDev interface
+func (swtch *switchDev) devAddActive(nme *networkMsg) {
+	swtch.switchState.active[nme.connectId] = nme.rate
+}
+
+// devRmActive removes a connection id to the list of active connections through the switch, as part of the topoDev interface
+func (swtch *switchDev) devRmActive(connectId int) {
+	delete(swtch.switchState.active, connectId)
 }
 
 // devDelay returns the state-dependend delay for passage through the switch, as part of the topoDev interface.
 func (swtch *switchDev) devDelay(msg any) float64 {
-	nm := msg.(networkMsgEdge)
-	delay := passThruDelay(swtch, nm.msg)
+	delay := passThruDelay(swtch, msg)
 	// N.B. we could put load-dependent scaling factor here
 	return delay
 }
 
 // LogNetEvent satisfies topoDev interface
-func (swtch *switchDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+func (swtch *switchDev) LogNetEvent(time vrtime.Time, execId int, connectId int, op string, isPckt bool, rate float64) {
 	if !swtch.switchState.trace {
 		return
 	}
-	devTraceMgr.AddTrace(time, execId, flowId, swtch.switchId, "switch", objEntry, msgEntry, rate)
+	devTraceMgr.AddTrace(time, execId, connectId, swtch.switchId, op, isPckt, rate)
 }
 
 // The routerDev struct holds information describing a run-time representation of a router
@@ -1159,10 +1305,13 @@ type routerDev struct {
 
 // The routerState type describes auxiliary information about the router
 type routerState struct {
-	buffer   float64 // volume of traffic that can be buffered, expressed in Mbytes
-	execTime float64 // nominal time for a packet to transit the router
-	trace    bool    // switch for calling trace saving
+	execTime float64             // nominal time for a packet to transit the router
+	rngstrm *rngstream.RngStream // pointer to a random number generator
+	trace    bool                // switch for calling trace saving
 	active   map[int]float64
+	bndwdth  float64             // maximum flow rate through router
+	load     float64
+    packets  int
 }
 
 // createRouterDev is a constructor, initializing a run-time representation of a router from its desc representation
@@ -1173,10 +1322,18 @@ func createRouterDev(routerDesc *RouterDesc) *routerDev {
 	router.routerId = nxtId()
 	router.routerIntrfcs = make([]*intrfcStruct, 0)
 	router.routerGroups = routerDesc.Groups
-	router.routerState = new(routerState)
-	router.routerState.active = make(map[int]float64)
-	router.routerState.trace = false
+	router.routerState = createRouterState(router.routerName)
 	return router
+}
+
+func createRouterState(name string) *routerState {
+	rs := new(routerState)
+	rs.active = make(map[int]float64)
+	rs.load = 0.0
+	rs.packets = 0
+	rs.trace = false
+	rs.rngstrm = rngstream.New(name)
+	return rs
 }
 
 // matchParam is used to determine whether a run-time parameter description
@@ -1204,8 +1361,6 @@ func (router *routerDev) setParam(param string, value valueStruct) {
 	switch param {
 		case "model":
 			router.routerModel = value.stringValue
-		case "buffer":
-			router.routerState.buffer = value.floatValue
 		case "trace":
 			router.routerState.trace = value.boolValue
 	}
@@ -1246,21 +1401,26 @@ func (router *routerDev) devState() any {
 	return router.routerState
 }
 
-func (rtr *routerDev) LogNetEvent(time vrtime.Time, execId int, flowId int, objEntry bool, msgEntry bool, rate float64) {
+// devRng returns a pointer to the routers's rng struct, as part of the topoDev interface
+func (router *routerDev) devRng() *rngstream.RngStream {
+	return router.routerState.rngstrm
+}
+
+func (rtr *routerDev) LogNetEvent(time vrtime.Time, execId int, connectId int, op string, isPckt bool, rate float64) {
 	if !rtr.routerState.trace {
 		return
 	}
-	devTraceMgr.AddTrace(time, execId, flowId, rtr.routerId, "router", objEntry, msgEntry, rate)
+	devTraceMgr.AddTrace(time, execId, connectId, rtr.routerId, op, isPckt, rate)
 }
 
-// devAddActive includes a flowId as part of what is active at the device, as part of the topoDev interface
-func (router *routerDev) devAddActive(nme *networkMsgEdge) {
-	router.routerState.active[nme.flowId] = nme.rate
+// devAddActive includes a connectId as part of what is active at the device, as part of the topoDev interface
+func (router *routerDev) devAddActive(nme *networkMsg) {
+	router.routerState.active[nme.connectId] = nme.rate
 }
 
-// devRmActive removes a flowId as part of what is active at the device, as part of the topoDev interface
-func (router *routerDev) devRmActive(flowId int) {
-	delete(router.routerState.active, flowId)
+// devRmActive removes a connectId as part of what is active at the device, as part of the topoDev interface
+func (router *routerDev) devRmActive(connectId int) {
+	delete(router.routerState.active, connectId)
 }
 
 // devDelay returns the state-dependent delay for passage through the router, as part of the topoDev interface.
@@ -1279,22 +1439,23 @@ type intrfcsToDev struct {
 	devId       int // id of the device the connection targets
 }
 
-// The networkMsgEdge type creates a wrapper for a message between comp pattern funcs.
+// The networkMsg type creates a wrapper for a message between comp pattern funcs.
 // One value (stepIdx) indexes into a list of route steps, so that by incrementing
 // we can find 'the next' step in the route.  One value is a pointer to this route list,
-// and the final value is a pointe to an inter-func comp pattern message.  The "Edge"
-// piece comes from associating the struct with a bit in the message, typically
-// the first or last bit.  The message is treated like a flow that starts and stops
-type networkMsgEdge struct {
+// and the final value is a pointe to an inter-func comp pattern message.  
+type networkMsg struct {
 	stepIdx int             // position within the route from source to destination
 	route   *[]intrfcsToDev // pointer to description of route
-	flowId  int             // flow identifier
+	connectId  int          // connection identifier
 	execId  int             // execution id given by app at entry
+    netMsgType networkMsgType  // enum type packet, srtFlow, endFlow, flowRate 
 	rate    float64         // effective bandwidth for message
-	bit     int             // bit number
 	msgLen  int             // length of the entire message, in Mbytes
-	end     bool            // bit 0 starts the message, 'end' flagged true means it is the last one.
 	msg     any             // message being carried.
+}
+
+func (nm *networkMsg) carriesPckt() bool {
+	return nm.netMsgType == packet
 }
 
 // pt2ptLatency computes the latency on a point-to-point connection
@@ -1304,10 +1465,10 @@ func pt2ptLatency(srcIntrfc, dstIntrfc *intrfcStruct) float64 {
 }
 
 // currentIntrfcs returns pointers to the source and destination interfaces whose
-// id values are carried in the current step of the route followed by the input argument networkMsgEdge.
+// id values are carried in the current step of the route followed by the input argument networkMsg.
 // If the interfaces are not directly connected but communicate through a network,
 // a pointer to that network is returned also
-func currentIntrfcs(nm *networkMsgEdge) (*intrfcStruct, *intrfcStruct, *networkStruct) {
+func currentIntrfcs(nm *networkMsg) (*intrfcStruct, *intrfcStruct, *networkStruct) {
 	srcIntrfcId := (*nm.route)[nm.stepIdx].srcIntrfcId
 	dstIntrfcId := (*nm.route)[nm.stepIdx].dstIntrfcId
 
@@ -1326,24 +1487,24 @@ func currentIntrfcs(nm *networkMsgEdge) (*intrfcStruct, *intrfcStruct, *networkS
 }
 
 // transitDelay returns the length of time (in seconds) taken
-// by the input argument networkMsgEdge to traverse the current step in the route it follows.
+// by the input argument networkMsg to traverse the current step in the route it follows.
 // That step may be a point-to-point wired connection, or may be transition through a network
 // w/o specification of passage through specific devices. In addition a pointer to the
 // network transited (if any) is returned
-func transitDelay(nm *networkMsgEdge) (float64, *networkStruct) {
+func transitDelay(nm *networkMsg) (float64, *networkStruct) {
 	var delay float64
 
 	// recover the interfaces themselves and the network between them, if any
 	srcIntrfc, dstIntrfc, net := currentIntrfcs(nm)
 
-	if (srcIntrfc.cable != nil && dstIntrfc.cable == nil) ||
-		 (srcIntrfc.cable == nil && dstIntrfc.cable != nil) {
+	if (srcIntrfc.cable != nil && dstIntrfc.cable == nil) || 
+				(srcIntrfc.cable == nil && dstIntrfc.cable != nil) {
 			panic("cabled interface confusion")
 	}
 
 	if srcIntrfc.cable == nil {
 		// delay is through network (baseline) 
-		delay = net.netState.latency
+		delay = net.netLatency()
 	} else {
 		// delay is across a pt-to-pt line
 		delay = pt2ptLatency(srcIntrfc, dstIntrfc)
@@ -1363,40 +1524,39 @@ func transitDelay(nm *networkMsgEdge) (float64, *networkStruct) {
 // embedded in the design as is static routes.
 //
 // The second assumption is related to the reality that messages do not traverse a link or
-// pass through an interface instaneously, they 'flow' across links, through networks, and through devices.
+// pass through an interface instaneously, they 'connection' across links, through networks, and through devices.
 // Flows have bandwidth, and every interface, link, device, and network has its own bandwidth
-// limit.  From the point of view of the receiving host, the effective bandwidth (assuming the bandwidths
+// limit.  From the point of view of the receiving endpt, the effective bandwidth (assuming the bandwidths
 // all along the path don't change) is the minimum bandwidth among all the things on the path.
 // In the path before the hop that induces the least bandwidth message may scoot through connections
-// at higher bandwidth, but the progress of that flow is ultimately limited  by the smallest bandwidth.
-// The simplifying assumption then is that the flow of the message's bits _everywhere_ along the path
+// at higher bandwidth, but the progress of that connection is ultimately limited  by the smallest bandwidth.
+// The simplifying assumption then is that the connection of the message's bits _everywhere_ along the path
 // is at that minimum bandwidth.   More detail in tracking and changing bandwidths along sections of the message
 // are possible, but at this point it is more complicated and time-consuming to do that than it seems to be worth
 // for anticipated use-cases.
 //
-// The third assumption is that for the life of a packet traversing from source host to destination host,
+// The third assumption is that for the life of a packet traversing from source endpt to destination endpt,
 // the latencies across interfaces, wires, devices, and networks are constant.  This just means they
 // don't change while the message is in motion, which means we can compute what the end-to-end latency will be.
 // Latencies can be permitted to change in a state-dependent way, so the assumption is time-limited.
 //
 // With this understanding, the mrnsbit network simulator accepts a message carried in a cmpPtnMsg and
-// creates two instances of the 'networkMsgEdge' type. One represents the first bit of the message, the
+// creates two instances of the 'networkMsg' type. One represents the first bit of the message, the
 // second the last bit.  The wrapper for the leading bit is inserted into the network, and the wrapper
 // for the trailing bit is inserted at a time later equal to the time it would take the message to completely pass
-// a point at the minimum rate described earlier.   Then the two networkMsgEdge structs pass through
+// a point at the minimum rate described earlier.   Then the two networkMsg structs pass through
 // every interface, link, network, and device, one following the other at a fixed delay in time, until
-// the trailing edge struct is completely captured by the destination host.  Here (and then) the cmpPtnMsg
+// the trailing edge struct is completely captured by the destination endpt.  Here (and then) the cmpPtnMsg
 // is extracted and presented to the CompPattern Func scheduling apperatus.
 
 // EnterNetwork is called after the execution from the application layer
-// It creates networkMsgEdge structs to represent the start and end of the message, and
-// schedules their arrival to the egress interface of the message source host
+// It creates networkMsg structs to represent the start and end of the message, and
+// schedules their arrival to the egress interface of the message source endpt
 // func enterNetwork(evtMgr *evtm.EventManager, cpf cmpPtnFunc, cpm *cmpPtnMsg) any {
 func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev string, msgLen int,
-	execId int, rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction) any {
+	execId int, isPckt bool, rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction,
+	lossCxt any, lossFunc evtm.EventHandlerFunction) any {
 
-	// srcId := hostDevByName[srcHost].hostId
-	// dstId := hostDevByName[dstHost].hostId
 	srcId := topoDevByName[srcDev].devId()
 	dstId := topoDevByName[dstDev].devId()
 
@@ -1407,33 +1567,43 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		panic(fmt.Errorf("unable to find a route %s -> %s\n", srcDev, dstDev))
 	}
 		
-	// get the latency and bandwidth for traffic on this path, computed
-	// 'now'
-	latency, bndwdth := routeTransitPerf(route)
+	// get the latency and bandwidth for traffic on this path, computed 'now'
+	latency, bndwdth := routeTransitPerf(srcId, dstId, msg, route, true)
 
 	// if the incoming rate is greater than 0, include it in the path minimum
-	if rate > 0.0 {
+	if !isPckt && rate > 0.0 {
 		bndwdth = math.Min(bndwdth, rate)
 	}
 
-	// starting a new flow, albeit short-lived!  Record what to do when
-	// this flow exits
-	//
-	flowId := nxtFlowId()
-
+	nMsgType := packet
+	if !isPckt {
+		ip := intPair{i: srcId, j:execId}
+		_, present := np.activeEntry[ip]
+		if !present {
+			nMsgType = srtFlow
+			np.activeEntry[ip] = true
+		} else if present && rate > 0.0 {
+			nMsgType = flowRate
+		} else {
+			nMsgType = endFlow
+			delete(np.activeEntry, ip)
+		}
+	}
+		
 	// if the command line selected the -qnetsim option we skip the
 	// detailed network simulation and jump straight to the receipt
-	// of the last bit on exit of the interface at the host where the
+	// of the last bit on exit of the interface at the endpt where the
 	// message is routed
 	if activePortal.QkNetSim {
 		// covert the number of bytes pushing pushed into the number of Mbytes being pushed,
 		// work out how long it takes for that many bytes to transit the pipe after the first bit,
 		// and add to the network latency to determine when the last bit emerges
-		delay := latency + (float64(msgLen)/1e6)/bndwdth
+		// make it appear the connection entered the network
+		connectId := np.Arrive(rtnCxt, rtnFunc, lossCxt, lossFunc)
 
 		// data structure that describes the message, noting that the 'edge' is the last bit
-		trailingEdge := networkMsgEdge{stepIdx: len(*route) - 1, route: route, rate: bndwdth, msgLen: msgLen, bit: msgLen*8 - 1,
-			end: true, flowId: flowId, execId: execId, msg: msg}
+		nm := networkMsg{stepIdx: len(*route) - 1, route: route, rate: bndwdth, msgLen: msgLen, 
+			netMsgType: nMsgType, connectId: connectId, execId: execId, msg: msg}
 
 		// The destination interface of the last routing step is where the message ultimately emerges from the network.
 		// That's the 'context' for the event-handler which deals with this data structure just as though it came off
@@ -1442,32 +1612,67 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		ingressIntrfc := intrfcById[ingressIntrfcId]
 
 		// schedule exit from final interface after msg passes through
-		evtMgr.Schedule(ingressIntrfc, trailingEdge, exitIngressIntrfc, vrtime.SecondsToTime(delay))
+		evtMgr.Schedule(ingressIntrfc, nm, exitIngressIntrfc, vrtime.SecondsToTime(latency))
 
-		return flowId
+		return connectId
 	}
 
-	np.Arrive(flowId, rtnCxt, rtnFunc)
+	connectId := np.Arrive(rtnCxt, rtnFunc, lossCxt, lossFunc)
 
 	// No quick network simulation, so make a message wrapper and push the message at the entry
-	// of the host's egress interface
+	// of the endpt's egress interface
 
-	nm := networkMsgEdge{stepIdx: 0, route: route, rate: bndwdth, end: false, bit: 0, msgLen: msgLen,
-		flowId: flowId, execId: execId, msg: msg}
+	nm := networkMsg{stepIdx: 0, route: route, rate: bndwdth, msgLen: msgLen,
+		netMsgType: nMsgType, connectId: connectId, execId: execId, msg: msg}
 
 	// get identity of egress interface
 	intrfc := intrfcById[(*route)[0].srcIntrfcId]
-	intrfc.faces.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, bndwdth)
+	intrfc.faces.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "enter", isPckt, bndwdth)
 
 	// how long to get through the device to the interface?
 	delay := (float64(msgLen*8) / 1e6) / bndwdth
 
-	// schedule the entry of the leading networkMsgEdge into the first egress interface (from the source host)
-	// once the whole packet has flowed through
+	// schedule the entry of the leading networkMsg into the first egress interface (from the source endpt)
+	// once the whole packet has connectioned through
 	evtMgr.Schedule(intrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
 
-	return flowId
+	return connectId
 }
+
+
+var cachedConnectionPerf map[intPair]floatPair = make(map[intPair]floatPair)
+
+func getCachedTransitPerf(srcId, dstId int) (bool, float64, float64) {
+	var low, high int
+
+	if srcId < dstId {
+		low = srcId; high = dstId
+	} else {
+		low = dstId; high = srcId
+	}
+
+	index := intPair{i:low, j:high}
+	fp, present := cachedConnectionPerf[index]
+	if present {
+		return true, fp.x, fp.y
+	} 
+	return false, 0.0, 0.0
+}
+
+func setCachedTransitPerf(srcId, dstId int, latency, bndwdth float64) {
+	var low, high int
+
+	if srcId < dstId {
+		low = srcId; high = dstId
+	} else {
+		low = dstId; high = srcId
+	}
+
+	index := intPair{i:low, j:high}
+	values := floatPair{x: latency, y: bndwdth}
+	cachedConnectionPerf[index] = values
+}
+
 
 // enterEgressIntrfc implements the event-handler for the entry of a message edge
 // to an interface through which the message will pass on its way out of a device. The
@@ -1479,46 +1684,36 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	intrfc := egressIntrfc.(*intrfcStruct)
 
 	// cast data argument to network message
-	nm := msg.(networkMsgEdge)
-	nm.end = false
+	nm := msg.(networkMsg)
 
-	// remove the flow from the device	
+	// remove the connection from the device	
 	thisDev := intrfc.device
-	thisDev.devRmActive(nm.flowId)
+	thisDev.devRmActive(nm.connectId)
 
-	// mark that this flow is passing through the interface
-	intrfc.state.active[nm.flowId] = nm.rate
-	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
-	thisDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, !nm.end, nm.rate)
+	// if this is a flow, mark that this connection is passing through the interface
+	if !nm.carriesPckt() {
+		intrfc.state.active[nm.connectId] = nm.rate
+		intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "enter", false, nm.rate)
+		thisDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "exit", false, nm.rate)
+	}
 	
-	// get delay through interface and schedule the leading edge arrival at exitEgressIntrfc
+	// get delay through interface and schedule arrival at exitEgressIntrfc
 	delay := intrfc.state.delay
-	nm.end = false
 	evtMgr.Schedule(egressIntrfc, nm, exitEgressIntrfc, vrtime.SecondsToTime(delay))
-
-	// make a copy of the networkMsgEdge and set the end bit
-	newEdge := nm
-	newEdge.end = true
-
-	// the trailing edge arrives after a delay comprised of first bit delay, and interface bndwdth
-	passage := float64(nm.msgLen*8)/(1e+6*intrfc.availBndwdth())
-
-	// schedule exit from this interface after msg passes through. 
-	// Note that entire message delivered to exitEgressIntrfc
-	evtMgr.Schedule(egressIntrfc, newEdge, exitEgressIntrfc, vrtime.SecondsToTime(delay+passage))
 
 	// event-handlers are required to return _something_
 	return nil
 }
 
 // exitEgressIntrfc implements an event handler for the departure of a message from an interface.
-// It determines the time-through-network of the message edge and schedules the arrival
-// of the edge at the ingress interface
+// It determines the time-through-network of the message and schedules the arrival
+// of the message at the ingress interface
 func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any {
 	intrfc := egressIntrfc.(*intrfcStruct)
-	nm := msg.(networkMsgEdge)
+	nm := msg.(networkMsg)
+	isPckt := nm.carriesPckt()
 
-	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, !nm.end, nm.rate)
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "exit", isPckt, nm.rate)
 
 	// transitDelay will differentiate between point-to-point wired connection and passage through a network
 	netDelay, net := transitDelay(&nm)
@@ -1531,23 +1726,61 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	// mark the rate at which the message is traveling
 	nm.rate = rate
 
-	// if this is entering a network, mark it
-	if !nm.end {
-		net.netState.active[nm.flowId] = nm.rate
+	// logic associated with flows
+	if nm.netMsgType == srtFlow {
+		net.netState.active[nm.connectId] = nm.rate
 		net.netState.load += nm.rate
-	} else {
-		// remove flow from those active on the interface
-		_, present := intrfc.state.active[nm.flowId]
+	} else if nm.netMsgType == endFlow {
+		// remove connection from those active on the interface
+		_, present := intrfc.state.active[nm.connectId]
 		if present {
-			delete(intrfc.state.active, nm.flowId)
+			delete(intrfc.state.active, nm.connectId)
 		}
-		
-		// add to netDelay the bandwidth and message-length-dependent time of transfer.
-		netDelay += float64(nm.msgLen*8)/(rate*1e+6)
+	} else if nm.netMsgType == flowRate {
+		// a rateFlow message has entered before, but now the rate changes.
+		// recover the old rate, subtract off from active and from load, and put in the new rate
+		oldRate := net.netState.active[nm.connectId]
+		net.netState.active[nm.connectId] = nm.rate
+		net.netState.load += (nm.rate-oldRate)
 	}
 
+	// for a packet crossing a network, sample the probability of a successful transition and
+	// potentially drop the message
+	if isPckt && (intrfc.cable == nil || intrfc.media != wired) {
+		// compute the ratio of arrival to service rate at the network
+		// FIND
+		a := net.netState.load/net.netState.capacity
 
-	// schedule arrival of the networkMsgEdge at the next interface
+		// estimate number of packets that can be served by
+		//    sec           1            pckts
+        //   ------ x -------------- x ----------
+        //   Mbytes	   latency (sec)     Mbyte
+		//
+		msgLen := float64(nm.msgLen*8)/1e+6
+		N := (1.0/rate) / (netDelay*msgLen)
+
+		// probability of being in state where a M/M/1/N queue is full
+		//
+        //  P_N = (1-a)a^N / (1-a^{N+1}) if a < 1
+        //      = 1/(N+1) if a == 1
+
+		prDrop := 1.0/(N+1)
+		if math.Abs(1.0-a) < 1e-3 {
+			prDrop = (1-a)*math.Pow(a,N)/(1-math.Pow(a,N+1))
+		}
+			
+		// sample a uniform 0,1, if less than prDrop then drop the packet
+		if intrfc.device.devRng().RandU01()	< prDrop {
+			// dropping packet
+			// we know the route and so could back trace as needed
+
+			return nil
+		}			
+	}
+
+	net.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "enter", isPckt, nm.rate)
+
+	// schedule arrival of the networkMsg at the next interface
 	nxtIntrfc := intrfcById[(*nm.route)[nm.stepIdx].dstIntrfcId]
 	evtMgr.Schedule(nxtIntrfc, msg, enterIngressIntrfc, vrtime.SecondsToTime(netDelay))
 
@@ -1565,32 +1798,39 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	intrfc := ingressIntrfc.(*intrfcStruct)
 
 	// cast data argument to network message
-	nm := msg.(networkMsgEdge)
+	nm := msg.(networkMsg)
+	isPckt := nm.carriesPckt()
 
-	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "enter", isPckt, nm.rate)
 
-	// if the first bit, mark that flow is occupying interface
-	intrfc.state.active[nm.flowId] = nm.rate
-
-	// if this is not the trailing edge, wait until it shows up
-	if !nm.end {
+	// if the arrival is a packet look for congestion and drop the packet
+	if isPckt && intrfc.congested(true) {
+		activePortal.lostConnection(evtMgr, &nm, nm.connectId)
 		return nil
 	}
 
-	// reduce load on network just left 
-	if intrfc.faces != nil {
-		rate, present := intrfc.faces.netState.active[nm.flowId]
-		if present {
-			intrfc.faces.netState.load -= rate
-			delete(intrfc.faces.netState.active, nm.flowId)
-		}
+	if !isPckt {
+		//  mark that connection is occupying interface
+		oldRate := intrfc.state.active[nm.connectId]  // notice that return is 0.0 if index not present
+		intrfc.state.active[nm.connectId] = nm.rate
+		intrfc.state.ingressLoad += (nm.rate-oldRate)
+	} else {
+		intrfc.state.packets += 1
 	}
 
+	// reduce load on network just left 
+	if nm.netMsgType == endFlow && intrfc.faces != nil {
+		rate, present := intrfc.faces.netState.active[nm.connectId]
+		if present {
+			intrfc.faces.netState.load -= rate
+			delete(intrfc.faces.netState.active, nm.connectId)
+		}
+	} else if (isPckt && intrfc.faces != nil) {
+		intrfc.faces.netState.packets -= 1
+	}
+	
 	// get delay through interface
 	delay := intrfc.state.delay
-
-	// the msg is all together, remark 'end' to be false
-	nm.end = false
 
 	// schedule exit from this interface after msg passes through
 	evtMgr.Schedule(ingressIntrfc, nm, exitIngressIntrfc, vrtime.SecondsToTime(delay))
@@ -1600,28 +1840,36 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 }
 
 // exitIngressIntrfc is the event handler for the arrival of a message at an interface facing the connection
-// through which the networkMsgEdge arrived. When this event handler is called the entire 
-// msg is exiting. If this device is a host or filter then accept the message 
+// through which the networkMsg arrived. When this event handler is called the entire 
+// msg is exiting. If this device is a endpt or filter then accept the message 
 // and push it into the CompPattern Func scheduling system. Otherwise compute the time the edge hits
 // the egress interface on the other side of device and schedule that arrival
 func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) any {
 	intrfc := ingressIntrfc.(*intrfcStruct)
-	nm := msg.(networkMsgEdge)
+	nm := msg.(networkMsg)
+
+	isPckt := nm.carriesPckt()
 
 	// log passage of msg through the interface
-	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, !nm.end, nm.rate)
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "exit", isPckt, nm.rate)
 
-	// take the flow off the active list
-	delete(intrfc.state.active, nm.flowId)
+	if isPckt {
+		// take the connection off the interface active list
+		intrfc.state.packets -= 1
+	} else if nm.netMsgType == endFlow {
+		// if the 'end' flag is set remove the flow rate from the interface
+		intrfc.state.ingressLoad -= intrfc.state.active[nm.connectId]
+		delete(intrfc.state.active, nm.connectId)
+	}
 
 	// log entry of packet into device 	
-	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, !nm.end, nm.rate)
+	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.connectId, "enter", isPckt, nm.rate)
 
-	// check whether the device is a host, in which case leave the network if this is the last bit
+	// check whether to leave the network. N.B., passage through switches and routers are not 
+	// treated as leaving the network
 	devCode := intrfc.device.devType()
-	if  devCode == hostCode || devCode == filterCode {
+	if devCode == endptCode || devCode == filterCode {
 		// schedule return into comp pattern system, where requested
-		intrfc.device.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, false, false, nm.rate)		
 		activePortal.Depart(evtMgr, nm)
 		return nil
 	}
@@ -1633,7 +1881,6 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 
 	// add this message to the device's active map
 	thisDev.devAddActive(&nm)
-	thisDev.LogNetEvent(evtMgr.CurrentTime(), nm.execId, nm.flowId, true, false, nm.rate) 
 
 	// advance position along route
 	nm.stepIdx += 1
@@ -1642,6 +1889,37 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 
 	// event scheduler has to return _something_
 	return nil
+}
+
+// networkPerf computes estimated probability of packet loss and mean latency
+// through the network as a function of load and capacity
+func (net *networkStruct) networkPerf(msgLen float64) (float64, float64) {
+
+	// estimate packet loss probability
+	rate := net.netState.load
+	a := rate/net.netState.capacity
+
+	netDelay := net.netState.latency
+
+	// estimate number of packets that can be served by
+	//    sec           1            pckts
+	//   ------ x -------------- x ----------
+	//   Mbytes	   latency (sec)     Mbyte
+	//
+	// rate in Mbytes/sec, msgLen in Mbytes
+	N := (1.0/rate) / (netDelay*msgLen)
+
+	// probability of being in state where a M/M/1/N queue is full
+	//
+	//  P_N = (1-a)a^N / (1-a^{N+1}) if a < 1
+	//      = 1/(N+1) if a == 1
+
+	prDrop := 1.0/(N+1)
+	if math.Abs(1.0-a) < 1e-3 {
+		prDrop = (1-a)*math.Pow(a,N)/(1-math.Pow(a,N+1))
+	}
+
+	return prDrop, netDelay/(1.0-a)
 }
 
 // passThruDelay returns the time it takes a device (switch or router)
@@ -1677,26 +1955,52 @@ func passThruDelay(dev topoDev, msg any) float64 {
 
 // routeTransPerf computes the end-to-end latency for the input route,
 // and the minimum bandwidth among all interfaces, devices, and networks
-func routeTransitPerf(route *[]intrfcsToDev) (float64, float64) {
+func routeTransitPerf(srcId, dstId int, msg any, route *[]intrfcsToDev, compute bool) (float64, float64) {
+	cached, latency, bndwdth := getCachedTransitPerf(srcId, dstId)	
+	if !compute && cached {
+		return latency, bndwdth
+	}
+
 	// get the variables declared
-	latency := float64(0.0)
-	bndwdth := math.MaxFloat64 / 2.0
+	latency = float64(0.0)
+	bndwdth = math.MaxFloat64 / 2.0
 
 	// step through every intrfcsToDev entry to get the delays
 	// and bandwidths it contributes
-	for _, step := range *route {
+	for idx, step := range *route {
 		srcIntrfc := intrfcById[step.srcIntrfcId]
 		dstIntrfc := intrfcById[step.dstIntrfcId]
-		network := dstIntrfc.faces
+		net := dstIntrfc.faces
 
-		latency += srcIntrfc.state.latency
-		latency += dstIntrfc.state.latency
-		latency += network.netState.latency
+		// include time through interface source
+		latency += srcIntrfc.state.delay
+		if srcIntrfc.cable == nil {
+			// FIND N.B. we should compute mean latency here delay is through network (baseline) 
+			// latency += net.netState.latency
+			latency += net.netLatency()
+		} else {
+			// delay is across a pt-to-pt line
+			latency += pt2ptLatency(srcIntrfc, dstIntrfc)
+		}
 
-		bndwdth = math.Min(bndwdth, srcIntrfc.availBndwdth())
-		bndwdth = math.Min(bndwdth, dstIntrfc.availBndwdth())
-		bndwdth = math.Min(bndwdth, network.availBndwdth())
+		// include time through dst interface
+		latency += dstIntrfc.state.delay
+
+		// add in the operation time of the device with dstIntrfc if not the terminus. N.B. assumption
+		// here is that this cost is independent of the message
+		if idx < len(*route)-1 {
+			dev := topoDevById[step.devId]
+			latency += dev.devDelay(msg)
+		}
+
+		bndwdth = math.Min(bndwdth, srcIntrfc.availBndwdth(false))
+		bndwdth = math.Min(bndwdth, dstIntrfc.availBndwdth(true))
+		if srcIntrfc.carry != nil {
+			bndwdth = math.Min(bndwdth, net.availBndwdth())
+		}
 	}
+	setCachedTransitPerf(srcId, dstId, latency, bndwdth)
 
 	return latency, bndwdth
 }
+

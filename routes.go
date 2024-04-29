@@ -17,7 +17,7 @@ import (
 // into the data structures used by a graph package that has built-in path discovery algorithms.
 // Weighting each edge by 1, a shortest path minimizes the number of hops, which is sort of what
 // local routing like OSPF does.
-//   The network representation from MrNesbits represents devices (Host, Switch, Router), with
+//   The network representation from MrNesbits represents devices (Endpt, Switch, Router), with
 // a link from devA to devB being represented if there is a direct wired or wireless connection
 // between them.  After a path is computed from device to device to device ... we discover the identity
 // of the interface through which the path accesses the device, and report that as part of the path.
