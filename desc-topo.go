@@ -392,17 +392,18 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 	intrfcs1 := []*IntrfcFrame{}
 	intrfcs2 := []*IntrfcFrame{}
 
+	for _, intrfc := range dev2.DevInterfaces() {
+		if intrfc.Faces == faces && !(intrfc.MediaType == "wireless") {
+			intrfcs2 = append(intrfcs2, intrfc)
+		}
+	}
+
 	for _, intrfc := range dev1.DevInterfaces() {
 		if intrfc.Faces == faces && !(intrfc.MediaType == "wireless") {
 			intrfcs1 = append(intrfcs1, intrfc)
 		}
 	}
 
-	for _, intrfc := range dev2.DevInterfaces() {
-		if intrfc.Faces == faces && !(intrfc.MediaType == "wireless") {
-			intrfcs2 = append(intrfcs2, intrfc)
-		}
-	}
 
 	// check whether the connection requested exists already or we can complete it
 	// without creating new interfaces
