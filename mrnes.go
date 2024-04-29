@@ -95,7 +95,7 @@ func BuildExperimentNet(syn map[string]string, useYAML bool, idCounter int, trac
 	tc, del, xd, xdx := GetExperimentNetDicts(syn)
 
 	// panic if any one of these dictionaries could not be built
-	if (tc == nil) || (xd == nil) || (del == nil) {
+	if (xd == nil) || (del == nil) || (tc == nil) {
 		panic("empty dictionary")
 	}
 
