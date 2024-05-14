@@ -1,4 +1,4 @@
- package mrnes
+package mrnes
 
 import (
 	"encoding/json"
@@ -148,7 +148,7 @@ var DevConnected map[string][]string = make(map[string][]string)
 // (endpt, switch, router, network) are involved in model construction.
 type NetDevice interface {
 	DevName() string                 // returns the .Name field of the struct
-	DevId() string                   // returns a unique (string) identifier for the struct
+	DevID() string                   // returns a unique (string) identifier for the struct
 	DevType() string                 // returns the type ("Switch","Router","Endpt","Network", "Filter")
 	DevInterfaces() []*IntrfcFrame   // list of interfaces attached to the NetDevice, if any
 	DevAddIntrfc(*IntrfcFrame) error // function to add another interface to the netDevic3
@@ -228,14 +228,13 @@ func CableIntrfcFrames(intrfc1, intrfc2 *IntrfcFrame) {
 	intrfc2.Cable = intrfc1
 }
 
-// CableIntrfcFrames links two interfaces through their 'Cable' attributes
+// CarryIntrfcFrames links two interfaces through their 'Cable' attributes
 func CarryIntrfcFrames(intrfc1, intrfc2 *IntrfcFrame) {
 	intrfc1.Carry = intrfc2
 	intrfc2.Carry = intrfc1
 }
 
-
-// CreateIntrfcDesc is a constructor for [IntrfcFrame] that fills in most of the attributes except Cable.
+// CreateIntrfc is a constructor for [IntrfcFrame] that fills in most of the attributes except Cable.
 // Arguments name the device holding the interface and its type, the type of communication fabric the interface uses, and the
 // name of the network the interface connects to
 func CreateIntrfc(device, name, devType, mediaType, faces string) *IntrfcFrame {
@@ -255,7 +254,7 @@ func CreateIntrfc(device, name, devType, mediaType, faces string) *IntrfcFrame {
 	intrfc.DevType = devType
 	intrfc.MediaType = mediaType
 	intrfc.Faces = faces
-	intrfc.Wireless = make([]*IntrfcFrame,0)
+	intrfc.Wireless = make([]*IntrfcFrame, 0)
 	intrfc.Groups = []string{}
 
 	// if the device in which this interface is embedded is not a router we are done
@@ -286,49 +285,48 @@ func CreateIntrfc(device, name, devType, mediaType, faces string) *IntrfcFrame {
 	return intrfc
 }
 
-func (iff *IntrfcFrame) AddGroup(groupName string) {
-	iff.Groups = append(iff.Groups, groupName)
+func (ifcf *IntrfcFrame) AddGroup(groupName string) {
+	ifcf.Groups = append(ifcf.Groups, groupName)
 }
 
-
 // Transform converts an IntrfcFrame and returns an IntrfcDesc, for serialization.
-func (ifs *IntrfcFrame) Transform() IntrfcDesc {
+func (ifcf *IntrfcFrame) Transform() IntrfcDesc {
 	// most attributes are stright copies
 	intrfcDesc := new(IntrfcDesc)
-	intrfcDesc.Device = ifs.Device
-	intrfcDesc.Name = ifs.Name
-	intrfcDesc.DevType = ifs.DevType
-	intrfcDesc.MediaType = ifs.MediaType
-	intrfcDesc.Faces = ifs.Faces
-	intrfcDesc.Groups = ifs.Groups
-	
+	intrfcDesc.Device = ifcf.Device
+	intrfcDesc.Name = ifcf.Name
+	intrfcDesc.DevType = ifcf.DevType
+	intrfcDesc.MediaType = ifcf.MediaType
+	intrfcDesc.Faces = ifcf.Faces
+	intrfcDesc.Groups = ifcf.Groups
+
 	// a IntrfcDesc defines its Cable field to be a string, which
 	// we set here to be the name of the interface the IntrfcFrame version
 	// points to
-	if ifs.Cable != nil {
-		intrfcDesc.Cable = ifs.Cable.Name
+	if ifcf.Cable != nil {
+		intrfcDesc.Cable = ifcf.Cable.Name
 	}
 
 	// a IntrfcDesc defines its Carry field to be a string, which
 	// we set here to be the name of the interface the IntrfcFrame version
 	// points to
-	if ifs.Carry != nil {
-		intrfcDesc.Carry = ifs.Carry.Name
+	if ifcf.Carry != nil {
+		intrfcDesc.Carry = ifcf.Carry.Name
 	}
 
 	// a IntrfcDesc defines its Wireless slice to be a slice of strings, which
 	// we set here to be the name of the interface the IntrfcFrame version
 	// points to
-	intrfcDesc.Wireless = make([]string,0)
+	intrfcDesc.Wireless = make([]string, 0)
 
-	for _, connection := range ifs.Wireless {
+	for _, connection := range ifcf.Wireless {
 		intrfcDesc.Wireless = append(intrfcDesc.Wireless, connection.Name)
 	}
-	
+
 	return *intrfcDesc
 }
 
-// IsConnect is part of a set of functions and data structures useful in managing
+// IsConnected is part of a set of functions and data structures useful in managing
 // construction of a communication network. It indicates whether two devices whose
 // identities are given are already connected through their interfaces, by Cable, Carry, or Wireless
 func IsConnected(id1, id2 string) bool {
@@ -336,15 +334,14 @@ func IsConnected(id1, id2 string) bool {
 	if !present {
 		return false
 	}
-	for _, peerId := range DevConnected[id1] {
-		if peerId == id2 {
+	for _, peerID := range DevConnected[id1] {
+		if peerID == id2 {
 			return true
 		}
 	}
 
 	return false
 }
-
 
 // MarkConnected modifes the DevConnected data structure to reflect that
 // the devices whose identities are the arguments have been connected.
@@ -376,12 +373,12 @@ func MarkConnected(id1, id2 string) {
 // devices dev1 and dev2 (recall that NetDevice is an interface satisified by Endpt, Router, Switch, Filter)
 func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 	// if already connected we don't do anything
-	if IsConnected(dev1.DevId(), dev2.DevId()) {
-		return 
+	if IsConnected(dev1.DevID(), dev2.DevID()) {
+		return
 	}
 
 	// this call will record the connection
-	MarkConnected(dev1.DevId(), dev2.DevId())
+	MarkConnected(dev1.DevID(), dev2.DevID())
 
 	// ensure that both devices are known to the network
 	net := netByName[faces]
@@ -415,24 +412,24 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 			if !cable && intrfc1.Carry != nil && intrfc1.Carry != intrfc2 {
 				continue
 			}
-			
+
 			// either intrfc1.cable is nil or intrfc is connected already to intrfc2.
 			// so then if intrfc2.cable is nil or is connected to intrfc1 we can complete the connection and leave
 			if cable && (intrfc2.Cable == intrfc1 || intrfc2.Cable == nil) {
 				intrfc1.Cable = intrfc2
-				intrfc2.Cable = intrfc1	
-				return 
+				intrfc2.Cable = intrfc1
+				return
 			}
 			// check whether a 'carry' connection already exists between intrfc1 and intrfc2
-			if !cable && (intrfc2.Carry == intrfc1 || intrfc1.Carry == intrfc2) { 
+			if !cable && (intrfc2.Carry == intrfc1 || intrfc1.Carry == intrfc2) {
 				intrfc1.Carry = intrfc2
-				intrfc2.Carry = intrfc1	
-				return 
+				intrfc2.Carry = intrfc1
+				return
 			}
 		}
 	}
 
-	// no prior reason to complete connection between dev1 and dev2 
+	// no prior reason to complete connection between dev1 and dev2
 	// see whether each has a 'free' interface, meaning it
 	// points to the right network but is not yet cabled or carried
 	var free1 *IntrfcFrame
@@ -486,18 +483,18 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 	}
 }
 
-// ConnectTo establishes a wireless connection (creating interfaces if needed) between
-// a hub and a device 
-func (hub *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) {
+// WirelessConnectTo establishes a wireless connection (creating interfaces if needed) between
+// a hub and a device
+func (rf *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) {
 	// ensure that both devices are known to the network
 
 	net := netByName[faces]
-	net.IncludeDev(hub, "wireless", true)
+	net.IncludeDev(rf, "wireless", true)
 	net.IncludeDev(dev, "wireless", true)
 
 	// ensure that hub has wireless interface facing the named network
 	var hubIntrfc *IntrfcFrame
-	for _, intrfc := range hub.Interfaces {
+	for _, intrfc := range rf.Interfaces {
 		if intrfc.MediaType == "wireless" && intrfc.Faces == faces {
 			hubIntrfc = intrfc
 			break
@@ -506,9 +503,9 @@ func (hub *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) {
 
 	// create an interface if necessary
 	if hubIntrfc == nil {
-		intrfcName := DefaultIntrfcName(hub.DevName())
-		hubIntrfc = CreateIntrfc(hub.DevName(), intrfcName, hub.DevType(), "wireless", faces)
-		hub.DevAddIntrfc(hubIntrfc)
+		intrfcName := DefaultIntrfcName(rf.DevName())
+		hubIntrfc = CreateIntrfc(rf.DevName(), intrfcName, rf.DevType(), "wireless", faces)
+		rf.DevAddIntrfc(hubIntrfc)
 	}
 
 	// ensure that device has wireless interface facing the named network
@@ -547,7 +544,7 @@ func (hub *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) {
 			break
 		}
 	}
-	
+
 	// add as needed
 	if !devKnown {
 		hubIntrfc.Wireless = append(hubIntrfc.Wireless, devIntrfc)
@@ -556,7 +553,6 @@ func (hub *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) {
 		devIntrfc.Wireless = append(devIntrfc.Wireless, hubIntrfc)
 	}
 }
-
 
 // A NetworkFrame holds the attributes of a network during the model construction phase
 type NetworkFrame struct {
@@ -588,28 +584,28 @@ type NetworkFrame struct {
 // the pointers to routers, filters, and switches are replaced by the string
 // names of those entities
 type NetworkDesc struct {
-	Name       string   `json:"name" yaml:"name"`
-	Groups	   []string `json:"groups" yaml:"groups"`
-	NetScale   string   `json:"netscale" yaml:"netscale"`
-	MediaType  string   `json:"mediatype" yaml:"mediatype"`
-	Endpts	   []string `json:"endpts" yaml:"endpts"`
-	Routers    []string `json:"routers" yaml:"routers"`
-	Filters	   []string `json:"filters" yaml:"filters"`
-	Switches   []string `json:"switches" yaml:"switches"`
+	Name      string   `json:"name" yaml:"name"`
+	Groups    []string `json:"groups" yaml:"groups"`
+	NetScale  string   `json:"netscale" yaml:"netscale"`
+	MediaType string   `json:"mediatype" yaml:"mediatype"`
+	Endpts    []string `json:"endpts" yaml:"endpts"`
+	Routers   []string `json:"routers" yaml:"routers"`
+	Filters   []string `json:"filters" yaml:"filters"`
+	Switches  []string `json:"switches" yaml:"switches"`
 }
 
-// CreateNetworkFrame is a constructor, with all the inherent attributes specified
+// CreateNetwork is a constructor, with all the inherent attributes specified
 func CreateNetwork(name, NetScale string, MediaType string) *NetworkFrame {
 	nf := new(NetworkFrame)
 	nf.Name = name           // name that is unique across entire simulation model
-	nf.NetScale = NetScale     // type such as "LAN", "WAN", "T3", "T2", "T1"
+	nf.NetScale = NetScale   // type such as "LAN", "WAN", "T3", "T2", "T1"
 	nf.MediaType = MediaType // currently "wired" or "wireless"
 
 	// initialize slices
 	nf.Routers = make([]*RouterFrame, 0)
-	nf.Switches = make([]*SwitchFrame,0)
-	nf.Filters  = make([]*FilterFrame,0)
-	nf.Endpts = make([]*EndptFrame,0)
+	nf.Switches = make([]*SwitchFrame, 0)
+	nf.Filters = make([]*FilterFrame, 0)
+	nf.Endpts = make([]*EndptFrame, 0)
 	nf.Groups = []string{}
 
 	objTypeByName[name] = "Network" // object name gets you object type
@@ -640,12 +636,13 @@ func DevNetworks(dev NetDevice) string {
 	for _, intrfc := range dev.DevInterfaces() {
 		nets = append(nets, intrfc.Faces)
 	}
-	return strings.Join(nets,",")
+	return strings.Join(nets, ",")
 }
 
-// IncludeDev makes sure that the network device being offered 
-//  a) has an interface facing the network
-//  b) is included in the network's list of those kind of devices
+// IncludeDev makes sure that the network device being offered
+//
+//	a) has an interface facing the network
+//	b) is included in the network's list of those kind of devices
 func (nf *NetworkFrame) IncludeDev(dev NetDevice, intrfcType string, chkIntrfc bool) {
 	devName := dev.DevName()
 	devType := dev.DevType()
@@ -661,40 +658,40 @@ func (nf *NetworkFrame) IncludeDev(dev NetDevice, intrfcType string, chkIntrfc b
 
 	// add it to the right list in the network
 	switch devType {
-		case "Endpt" :
-			endpt := dev.(*EndptFrame)
-			if intrfc != nil {
-				endpt.Interfaces = append(endpt.Interfaces, intrfc)
-			}
-			if !EndptPresent(nf.Endpts, endpt) {
-				nf.Endpts = append(nf.Endpts, endpt)
-			}
-		case "Router":
-			rtr := dev.(*RouterFrame)
-			if intrfc != nil {
-				rtr.Interfaces = append(rtr.Interfaces, intrfc)
-			}
-			if !RouterPresent(nf.Routers, rtr) {
-				nf.Routers = append(nf.Routers, rtr)
-			}
+	case "Endpt":
+		endpt := dev.(*EndptFrame)
+		if intrfc != nil {
+			endpt.Interfaces = append(endpt.Interfaces, intrfc)
+		}
+		if !EndptPresent(nf.Endpts, endpt) {
+			nf.Endpts = append(nf.Endpts, endpt)
+		}
+	case "Router":
+		rtr := dev.(*RouterFrame)
+		if intrfc != nil {
+			rtr.Interfaces = append(rtr.Interfaces, intrfc)
+		}
+		if !RouterPresent(nf.Routers, rtr) {
+			nf.Routers = append(nf.Routers, rtr)
+		}
 
-		case "Switch":
-			swtch := dev.(*SwitchFrame)
-			if intrfc != nil {
-				swtch.Interfaces = append(swtch.Interfaces, intrfc)
-			}
-			if !SwitchPresent(nf.Switches, swtch) {
-				nf.Switches = append(nf.Switches, swtch)
-			}
+	case "Switch":
+		swtch := dev.(*SwitchFrame)
+		if intrfc != nil {
+			swtch.Interfaces = append(swtch.Interfaces, intrfc)
+		}
+		if !SwitchPresent(nf.Switches, swtch) {
+			nf.Switches = append(nf.Switches, swtch)
+		}
 
-		case "Filter":
-			filter := dev.(*FilterFrame)
-			if intrfc != nil {
-				filter.Interfaces = append(filter.Interfaces, intrfc)
-			}
-			if !FilterPresent(nf.Filters, filter) {
-				nf.Filters = append(nf.Filters, filter)
-			}
+	case "Filter":
+		filter := dev.(*FilterFrame)
+		if intrfc != nil {
+			filter.Interfaces = append(filter.Interfaces, intrfc)
+		}
+		if !FilterPresent(nf.Filters, filter) {
+			nf.Filters = append(nf.Filters, filter)
+		}
 	}
 }
 
@@ -710,13 +707,13 @@ func (nf *NetworkFrame) AddRouter(rtrf *RouterFrame) {
 	nf.Routers = append(nf.Routers, rtrf)
 }
 
-// AddRouter includes the argument router into the network,
+// AddSwitch includes the argument router into the network,
 // throws an error if already present
 func (nf *NetworkFrame) AddSwitch(swtch *SwitchFrame) {
 	// check whether a router with this same name already exists here
 	for _, nfswtch := range nf.Switches {
 		if nfswtch.Name == swtch.Name {
-			return	
+			return
 		}
 	}
 	nf.Switches = append(nf.Switches, swtch)
@@ -756,7 +753,6 @@ func (nf *NetworkFrame) Transform() NetworkDesc {
 		nd.Filters[idx] = nf.Filters[idx].Name
 	}
 
-
 	return *nd
 }
 
@@ -774,10 +770,10 @@ type RouterDesc struct {
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
 
-// RouterDesc describes parameters of a Router in the topology in pre-serialized form
+// RouterFrame describes parameters of a Router in the topology in pre-serialized form
 type RouterFrame struct {
-	Name       string         // identical to RouterDesc attribute
-	Groups	   []string
+	Name       string // identical to RouterDesc attribute
+	Groups     []string
 	Model      string         // identifical to RouterDesc attribute
 	Interfaces []*IntrfcFrame // list of interface frames that describe the ports of the router
 }
@@ -808,35 +804,35 @@ func CreateRouter(name, model string) *RouterFrame {
 }
 
 func RouterPresent(rtrList []*RouterFrame, rtr *RouterFrame) bool {
-    for _, rtrInList := range rtrList {
-        if rtrInList.Name == rtr.Name {
-            return true
-        }
-    }
-    return false
-}  
+	for _, rtrInList := range rtrList {
+		if rtrInList.Name == rtr.Name {
+			return true
+		}
+	}
+	return false
+}
 
 // DevName returns the name of the NetDevice
 func (rf *RouterFrame) DevName() string {
 	return rf.Name
 }
 
-// devType returns network objec type (e.g., "Switch", "Router", "Endpt", "Network") for the NetDevice
+// DevType returns network objec type (e.g., "Switch", "Router", "Endpt", "Network") for the NetDevice
 func (rf *RouterFrame) DevType() string {
 	return "Router"
 }
 
-// devId returns a unique identifier for the NetDevice
-func (rf *RouterFrame) DevId() string {
+// DevID returns a unique identifier for the NetDevice
+func (rf *RouterFrame) DevID() string {
 	return rf.Name
 }
 
-// devModel returns the NetDevice model code, if any
+// DevModel returns the NetDevice model code, if any
 func (rf *RouterFrame) DevModel() string {
 	return rf.Model
 }
 
-// devInterfaces returns the slice of IntrfcFrame held by the NetDevice, if any
+// DevInterfaces returns the slice of IntrfcFrame held by the NetDevice, if any
 func (rf *RouterFrame) DevInterfaces() []*IntrfcFrame {
 	return rf.Interfaces
 }
@@ -845,7 +841,7 @@ func (rf *RouterFrame) DevInterfaces() []*IntrfcFrame {
 func (rf *RouterFrame) AddIntrfc(intrfc *IntrfcFrame) error {
 	for _, ih := range rf.Interfaces {
 		if ih == intrfc || ih.Name == intrfc.Name {
-			return fmt.Errorf("attempt to re-add interface %s to switch %s\n", intrfc.Name, rf.Name)
+			return fmt.Errorf("attempt to re-add interface %s to switch %s", intrfc.Name, rf.Name)
 		}
 	}
 
@@ -857,27 +853,27 @@ func (rf *RouterFrame) AddIntrfc(intrfc *IntrfcFrame) error {
 	return nil
 }
 
-// devAddIntrfc includes an IntrfcFrame to the NetDevice
+// DevAddIntrfc includes an IntrfcFrame to the NetDevice
 func (rf *RouterFrame) DevAddIntrfc(iff *IntrfcFrame) error {
 	return rf.AddIntrfc(iff)
 }
 
 // AddGroup includes a group name to the router
 func (rf *RouterFrame) AddGroup(groupName string) {
-	rf.Groups = append(rf.Groups, groupName)	
+	rf.Groups = append(rf.Groups, groupName)
 }
 
 // Transform returns a serializable RouterDesc, transformed from a RouterFrame.
-func (rdf *RouterFrame) Transform() RouterDesc {
+func (rf *RouterFrame) Transform() RouterDesc {
 	rd := new(RouterDesc)
-	rd.Name = rdf.Name
-	rd.Model = rdf.Model
-	rd.Groups = rdf.Groups
+	rd.Name = rf.Name
+	rd.Model = rf.Model
+	rd.Groups = rf.Groups
 
 	// create serializable representation of the interfaces by calling the Transform method on their Frame representation
-	rd.Interfaces = make([]IntrfcDesc, len(rdf.Interfaces))
-	for idx := 0; idx < len(rdf.Interfaces); idx += 1 {
-		rd.Interfaces[idx] = rdf.Interfaces[idx].Transform()
+	rd.Interfaces = make([]IntrfcDesc, len(rf.Interfaces))
+	for idx := 0; idx < len(rf.Interfaces); idx += 1 {
+		rd.Interfaces[idx] = rf.Interfaces[idx].Transform()
 	}
 
 	return *rd
@@ -886,15 +882,15 @@ func (rdf *RouterFrame) Transform() RouterDesc {
 // SwitchDesc holds a serializable representation of a switch.
 type SwitchDesc struct {
 	Name       string       `json:"name" yaml:"name"`
-	Groups	   []string		`json:"groups" yaml:"groups"`
+	Groups     []string     `json:"groups" yaml:"groups"`
 	Model      string       `json:"model" yaml:"model"`
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
 
 // SwitchFrame holds a pre-serialization representation of a Switch
 type SwitchFrame struct {
-	Name       string         // unique string identifier used to reference the router
-	Groups	   []string
+	Name       string // unique string identifier used to reference the router
+	Groups     []string
 	Model      string         // device model identifier
 	Interfaces []*IntrfcFrame // interface frames that describe the ports of the router
 }
@@ -904,7 +900,7 @@ func DefaultSwitchName(name string) string {
 	return fmt.Sprintf("switch(%s).%d", name, numberOfSwitches)
 }
 
-// CreateSwitchFrame constructs a switch frame.  Saves (and possibly creates) the switch name,
+// CreateSwitch constructs a switch frame.  Saves (and possibly creates) the switch name,
 func CreateSwitch(name, model string) *SwitchFrame {
 	sf := new(SwitchFrame)
 	numberOfSwitches += 1
@@ -929,7 +925,7 @@ func (sf *SwitchFrame) AddIntrfc(iff *IntrfcFrame) error {
 	// check whether interface exists here already
 	for _, ih := range sf.Interfaces {
 		if ih == iff || ih.Name == iff.Name {
-			return fmt.Errorf("attempt to re-add interface %s to switch %s\n", iff.Name, sf.Name)
+			return fmt.Errorf("attempt to re-add interface %s to switch %s", iff.Name, sf.Name)
 		}
 	}
 
@@ -946,35 +942,35 @@ func (sf *SwitchFrame) AddGroup(groupName string) {
 }
 
 func SwitchPresent(swtchList []*SwitchFrame, swtch *SwitchFrame) bool {
-    for _, swtchInList := range swtchList {
-        if swtchInList.Name == swtch.Name {
-            return true
-        }
-    }
-    return false
-}  
+	for _, swtchInList := range swtchList {
+		if swtchInList.Name == swtch.Name {
+			return true
+		}
+	}
+	return false
+}
 
 // DevName returns name for the NetDevice
 func (sf *SwitchFrame) DevName() string {
 	return sf.Name
 }
 
-// devType returns the type of the NetDevice (e.g. "Switch","Router","Endpt","Network")
+// DevType returns the type of the NetDevice (e.g. "Switch","Router","Endpt","Network")
 func (sf *SwitchFrame) DevType() string {
 	return "Switch"
 }
 
-// devId returns unique identifier for NetDevice
-func (sf *SwitchFrame) DevId() string {
+// DevID returns unique identifier for NetDevice
+func (sf *SwitchFrame) DevID() string {
 	return sf.Name
 }
 
-// devInterfaces returns list of IntrfcFrames attached to the NetDevice, if any
+// DevInterfaces returns list of IntrfcFrames attached to the NetDevice, if any
 func (sf *SwitchFrame) DevInterfaces() []*IntrfcFrame {
 	return sf.Interfaces
 }
 
-// devAddIntrfc adds an IntrfcFrame to the NetDevice
+// DevAddIntrfc adds an IntrfcFrame to the NetDevice
 func (sf *SwitchFrame) DevAddIntrfc(iff *IntrfcFrame) error {
 	return sf.AddIntrfc(iff)
 }
@@ -998,9 +994,9 @@ func (sf *SwitchFrame) Transform() SwitchDesc {
 // FilterDesc defines serializable representation of a Filter.
 type FilterDesc struct {
 	Name       string       `json:"name" yaml:"name"`
-	Groups	   []string		`json:"groups" yaml:"groups"`
-	CPU		   string		`json:"cpu" yaml:"cpu"`
-	Model	   string		`json:"model" yaml:"model"`
+	Groups     []string     `json:"groups" yaml:"groups"`
+	CPU        string       `json:"cpu" yaml:"cpu"`
+	Model      string       `json:"model" yaml:"model"`
 	FilterType string       `json:"filtertype" yaml:"filtertype"`
 	Network    string       `json:"network" yaml:"network"`
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
@@ -1008,10 +1004,10 @@ type FilterDesc struct {
 
 // FilterFrame defines pre-serialization representation of a Filter
 type FilterFrame struct {
-	Name       string         // unique string identifier
-	Groups	   []string
-	Model	   string
-	FilterType   string         // parameter used to index into execution time tables
+	Name       string // unique string identifier
+	Groups     []string
+	Model      string
+	FilterType string         // parameter used to index into execution time tables
 	Network    string         // name of network containing filter
 	Interfaces []*IntrfcFrame // list of interfaces that describe the networks the filter connects to
 }
@@ -1035,7 +1031,7 @@ func CreateFilter(name, filterType, attrib string) *FilterFrame {
 	}
 	ff.Name = name
 	objTypeByName[name] = "Filter" // from name get type of object, here, "Filter"
-	devByName[name] = ff         // from name get object
+	devByName[name] = ff           // from name get object
 
 	ff.Interfaces = make([]*IntrfcFrame, 0) // initialize slice of interface frames
 	ff.Groups = []string{}
@@ -1065,7 +1061,7 @@ func (ff *FilterFrame) Transform() FilterDesc {
 func (ff *FilterFrame) AddIntrfc(iff *IntrfcFrame) error {
 	for _, ih := range ff.Interfaces {
 		if ih == iff || ih.Name == iff.Name {
-			return fmt.Errorf("attempt to re-add interface %s to switch %s\n", iff.Name, ff.Name)
+			return fmt.Errorf("attempt to re-add interface %s to switch %s", iff.Name, ff.Name)
 		}
 	}
 
@@ -1083,13 +1079,13 @@ func (ff *FilterFrame) AddGroup(groupName string) {
 	ff.Groups = append(ff.Groups, groupName)
 }
 
-func FilterPresent(filterList []*FilterFrame, filter *FilterFrame) bool { 
-    for _, filterInList := range filterList { 
-        if filterInList.Name == filter.Name { 
-            return true
-        }
-    }
-    return false
+func FilterPresent(filterList []*FilterFrame, filter *FilterFrame) bool {
+	for _, filterInList := range filterList {
+		if filterInList.Name == filter.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // DevName returns the NetDevice name
@@ -1097,46 +1093,46 @@ func (ff *FilterFrame) DevName() string {
 	return ff.Name
 }
 
-// devId returns the NetDevice unique identifier
-func (ff *FilterFrame) DevId() string {
+// DevID returns the NetDevice unique identifier
+func (ff *FilterFrame) DevID() string {
 	return ff.Name
 }
 
-// devType returns the NetDevice Type
+// DevType returns the NetDevice Type
 func (ff *FilterFrame) DevType() string {
 	return "Filter"
 }
 
-// devInterfaces returns the NetDevice list of IntrfcFrames, if any
+// DevInterfaces returns the NetDevice list of IntrfcFrames, if any
 func (ff *FilterFrame) DevInterfaces() []*IntrfcFrame {
 	return ff.Interfaces
 }
 
-// devAddIntrfc includes an IntrfcFrame to a NetDevice's list of IntrfcFrames
+// DevAddIntrfc includes an IntrfcFrame to a NetDevice's list of IntrfcFrames
 func (ff *FilterFrame) DevAddIntrfc(iff *IntrfcFrame) error {
 	return ff.AddIntrfc(iff)
 }
 
-// FilterDesc defines serializable representation of a Filter.
+// EndptDesc defines serializable representation of a Filter.
 type EndptDesc struct {
 	Name       string       `json:"name" yaml:"name"`
-	Groups	   []string		`json:"groups" yaml:"groups"`
-	Model	   string       `json:"model" yaml:"model"`
-	CPU		   string       `json:"cpu" yaml:"cpu"`
-	EUD		   bool		    `json:"eud" yaml:"eud"`
-	Cores	   int		    `json:"cores" yaml:"cores"`
+	Groups     []string     `json:"groups" yaml:"groups"`
+	Model      string       `json:"model" yaml:"model"`
+	CPU        string       `json:"cpu" yaml:"cpu"`
+	EUD        bool         `json:"eud" yaml:"eud"`
+	Cores      int          `json:"cores" yaml:"cores"`
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
 
 // EndptFrame defines pre-serialization representation of a Endpt
 type EndptFrame struct {
-	Name       string         // unique string identifier
+	Name       string // unique string identifier
 	Groups     []string
-	CPU		   string       
-	Model	   string         
-	EUD		   bool
-	Cores	   int
-	EndptType   string         // parameter used to index into execution time tables
+	CPU        string
+	Model      string
+	EUD        bool
+	Cores      int
+	EndptType  string         // parameter used to index into execution time tables
 	Interfaces []*IntrfcFrame // list of interfaces that describe the networks the endpt connects to
 }
 
@@ -1157,14 +1153,14 @@ func CreateEUD(name, model string, cores int) *EndptFrame {
 	return epf
 }
 
-// CreateEndptFrame is a constructor. It saves (or creates) the endpt name, and saves
+// CreateEndpt is a constructor. It saves (or creates) the endpt name, and saves
 // the optional endpt type (which has use in run-time configuration)
 func CreateEndpt(name, model string, cores int) *EndptFrame {
 	epf := new(EndptFrame)
 	numberOfEndpts += 1
 
 	epf.Model = model
-	epf.EUD = false		// default is that endpoint is not an EUD but a host
+	epf.EUD = false // default is that endpoint is not an EUD but a host
 	epf.Cores = cores
 
 	// get a (presumeably unique) string name
@@ -1204,7 +1200,7 @@ func (epf *EndptFrame) Transform() EndptDesc {
 func (epf *EndptFrame) AddIntrfc(iff *IntrfcFrame) error {
 	for _, ih := range epf.Interfaces {
 		if ih == iff || ih.Name == iff.Name {
-			return fmt.Errorf("attempt to re-add interface %s to switch %s\n", iff.Name, epf.Name)
+			return fmt.Errorf("attempt to re-add interface %s to switch %s", iff.Name, epf.Name)
 		}
 	}
 
@@ -1229,37 +1225,37 @@ func (epf *EndptFrame) SetCores(cores int) {
 func (epf *EndptFrame) AddGroup(groupName string) {
 	epf.Groups = append(epf.Groups, groupName)
 }
- 
+
 func EndptPresent(endptList []*EndptFrame, endpt *EndptFrame) bool {
-    for _, endptInList := range endptList {
+	for _, endptInList := range endptList {
 		if endptInList.Name == endpt.Name {
 			return true
 		}
-    }
-    return false
-}   
+	}
+	return false
+}
 
 // DevName returns the NetDevice name
 func (epf *EndptFrame) DevName() string {
 	return epf.Name
 }
 
-// devId returns the NetDevice unique identifier
-func (epf *EndptFrame) DevId() string {
+// DevID returns the NetDevice unique identifier
+func (epf *EndptFrame) DevID() string {
 	return epf.Name
 }
 
-// devType returns the NetDevice Type
+// DevType returns the NetDevice Type
 func (epf *EndptFrame) DevType() string {
 	return "Endpt"
 }
 
-// devInterfaces returns the NetDevice list of IntrfcFrames, if any
+// DevInterfaces returns the NetDevice list of IntrfcFrames, if any
 func (epf *EndptFrame) DevInterfaces() []*IntrfcFrame {
 	return epf.Interfaces
 }
 
-// devAddIntrfc includes an IntrfcFrame to a NetDevice's list of IntrfcFrames
+// DevAddIntrfc includes an IntrfcFrame to a NetDevice's list of IntrfcFrames
 func (epf *EndptFrame) DevAddIntrfc(iff *IntrfcFrame) error {
 	return epf.AddIntrfc(iff)
 }
@@ -1270,7 +1266,7 @@ func (epf *EndptFrame) DevAddIntrfc(iff *IntrfcFrame) error {
 // or only if there is no existing connection
 func ConnectNetworks(net1, net2 *NetworkFrame, newRtr bool) (*RouterFrame, error) {
 	// count the number of routers that net1 and net2 share already
-	var shared int = 0
+	shared := 0
 	for _, rtr1 := range net1.Routers {
 		for _, rtr2 := range net2.Routers {
 			if rtr1.Name == rtr2.Name {
@@ -1308,12 +1304,12 @@ func ConnectNetworks(net1, net2 *NetworkFrame, newRtr bool) (*RouterFrame, error
 // The TopoCfgFrame struc gives the highest level structure of the topology,
 // is ultimately the encompassing dictionary in the serialization
 type TopoCfgFrame struct {
-	Name             string
-	Endpts            []*EndptFrame
-	Networks         []*NetworkFrame
-	Routers          []*RouterFrame
-	Switches         []*SwitchFrame
-	Filters			 []*FilterFrame
+	Name     string
+	Endpts   []*EndptFrame
+	Networks []*NetworkFrame
+	Routers  []*RouterFrame
+	Switches []*SwitchFrame
+	Filters  []*FilterFrame
 }
 
 // CreateTopoCfgFrame is a constructor.
@@ -1399,32 +1395,32 @@ func (tf *TopoCfgFrame) AddSwitch(swtch *SwitchFrame) {
 // Consolidate gathers endpts, switches, and routers from the networks added to the TopoCfgFrame,
 // and make sure that all the devices referred to in the different components are exposed
 // at the TopoCfgFrame level
-func (tcf *TopoCfgFrame) Consolidate() error {
-	if len(tcf.Networks) == 0 {
-		return fmt.Errorf("No networks given in TopoCfgFrame in Consolidate call\n")
+func (tf *TopoCfgFrame) Consolidate() error {
+	if len(tf.Networks) == 0 {
+		return fmt.Errorf("no networks given in TopoCfgFrame in Consolidate call")
 	}
 
-	tcf.Endpts = []*EndptFrame{}
-	tcf.Routers = []*RouterFrame{}
-	tcf.Switches = []*SwitchFrame{}
-	tcf.Filters = []*FilterFrame{}
+	tf.Endpts = []*EndptFrame{}
+	tf.Routers = []*RouterFrame{}
+	tf.Switches = []*SwitchFrame{}
+	tf.Filters = []*FilterFrame{}
 
-	for _, net := range tcf.Networks {
+	for _, net := range tf.Networks {
 
 		// ensure the connections between switches and routers in the network
 		// net.Consolidate()
 
 		for _, rtr := range net.Routers {
-			tcf.AddRouter(rtr)
+			tf.AddRouter(rtr)
 		}
 		for _, endpt := range net.Endpts {
-			tcf.AddEndpt(endpt)
+			tf.AddEndpt(endpt)
 		}
 		for _, filter := range net.Filters {
-			tcf.AddFilter(filter)
+			tf.AddFilter(filter)
 		}
-		for _, swtch := range net.Switches{
-			tcf.AddSwitch(swtch)
+		for _, swtch := range net.Switches {
+			tf.AddSwitch(swtch)
 		}
 	}
 
@@ -1478,6 +1474,7 @@ func (tf *TopoCfgFrame) Transform() TopoCfg {
 }
 
 // Type definitions for TopoCfg attributes
+
 type RtrDescSlice []RouterDesc
 type EndptDescSlice []EndptDesc
 type NetworkDescSlice []NetworkDesc
@@ -1487,12 +1484,12 @@ type FilterDescSlice []FilterDesc
 // TopoCfg contains all of the networks, routers, and
 // endpts, as they are listed in the json file.
 type TopoCfg struct {
-	Name             string                   `json:"name" yaml:"name"`
-	Networks         NetworkDescSlice         `json:"networks" yaml:"networks"`
-	Routers          RtrDescSlice             `json:"routers" yaml:"routers"`
-	Endpts           EndptDescSlice            `json:"endpts" yaml:"endpts"`
-	Switches         SwitchDescSlice          `json:"switches" yaml:"switches"`
-	Filters			 FilterDescSlice          `json:"filters" yaml:"filters"`
+	Name     string           `json:"name" yaml:"name"`
+	Networks NetworkDescSlice `json:"networks" yaml:"networks"`
+	Routers  RtrDescSlice     `json:"routers" yaml:"routers"`
+	Endpts   EndptDescSlice   `json:"endpts" yaml:"endpts"`
+	Switches SwitchDescSlice  `json:"switches" yaml:"switches"`
+	Filters  FilterDescSlice  `json:"filters" yaml:"filters"`
 }
 
 // A TopoCfgDict holds instances of TopoCfg structures, in a map whose key is
@@ -1604,6 +1601,7 @@ func ReadTopoCfgDict(topoCfgDictFileName string, useYAML bool, dict []byte) (*To
 }
 
 // types used in linking to code that generates the starting structures rather than read from file
+
 type BuildTopoCfgFuncType func(any) *TopoCfg
 type BuildExpCfgFuncType func(any) *ExpCfg
 
@@ -1677,12 +1675,12 @@ func ReadTopoCfg(topoFileName string, useYAML bool, dict []byte) (*TopoCfg, erro
 	return &example, nil
 }
 
-// An AttrbStruct holds the name of an attribute and a value for it
+// AttrbStruct holds the name of an attribute and a value for it
 type AttrbStruct struct {
 	AttrbName, AttrbValue string
 }
 
-// CreateAttrb is a constructor
+// CreateAttrbStruct is a constructor
 func CreateAttrbStruct(attrbName, attrbValue string) *AttrbStruct {
 	as := new(AttrbStruct)
 	as.AttrbName = attrbName
@@ -1690,7 +1688,7 @@ func CreateAttrbStruct(attrbName, attrbValue string) *AttrbStruct {
 	return as
 }
 
-// ValidateAttrb checks that the attribute named is one that associates with the parameter object type named
+// ValidateAttribute checks that the attribute named is one that associates with the parameter object type named
 func ValidateAttribute(paramObj, attrbName string) bool {
 	_, present := ExpAttributes[paramObj]
 	if !present {
@@ -1703,7 +1701,7 @@ func ValidateAttribute(paramObj, attrbName string) bool {
 	}
 
 	// result is true if the name is in the list of attributes for the parameter object type
-	return slices.Contains(ExpAttributes[paramObj], attrbName)	 
+	return slices.Contains(ExpAttributes[paramObj], attrbName)
 }
 
 // CompareAttrbs returns -1 if the first argument is strictly more general than the second,
@@ -1719,7 +1717,7 @@ func CompareAttrbs(attrbs1, attrbs2 []AttrbStruct) int {
 			for _, attrb2 := range attrbs2 {
 				if attrb2.AttrbName == attrbName {
 					found = true
-					break	
+					break
 				}
 			}
 			// if attrbName was not found in attrb2 then attrbs1 cannot be strictly more general
@@ -1730,7 +1728,7 @@ func CompareAttrbs(attrbs1, attrbs2 []AttrbStruct) int {
 		}
 		// every attribute name in attrbs1 found in attrbs2, means attrbs1 is more general
 		return -1
-	}		
+	}
 
 	if len(attrbs2) < len(attrbs1) {
 		for _, attrb2 := range attrbs2 {
@@ -1739,7 +1737,7 @@ func CompareAttrbs(attrbs1, attrbs2 []AttrbStruct) int {
 			for _, attrb1 := range attrbs1 {
 				if attrb1.AttrbName == attrbName {
 					found = true
-					break	
+					break
 				}
 			}
 			// if attrbName was not found in attrb1 then attrbs2 cannot be strictly more general
@@ -1752,7 +1750,7 @@ func CompareAttrbs(attrbs1, attrbs2 []AttrbStruct) int {
 		return 1
 	}
 	return 0
-}		
+}
 
 // EqAttrbs determines whether the two attribute lists are exactly the same
 func EqAttrbs(attrbs1, attrbs2 []AttrbStruct) bool {
@@ -1794,9 +1792,9 @@ func EqAttrbs(attrbs1, attrbs2 []AttrbStruct) bool {
 	return true
 }
 
-// An ExpParameter struct describes an input to experiment configuration at run-time. It specifies
+// ExpParameter struct describes an input to experiment configuration at run-time. It specifies
 //   - ParamObj identifies the kind of thing being configured : Switch, Router, Endpt, Filter, Interface, or Network
-//   - Attributes is a list of attributes, each of which are required for the parameter value to be applied.  
+//   - Attributes is a list of attributes, each of which are required for the parameter value to be applied.
 type ExpParameter struct {
 	// Type of thing being configured
 	ParamObj string `json:"paramObj" yaml:"paramObj"`
@@ -1812,21 +1810,20 @@ type ExpParameter struct {
 	Value string `json:"value" yaml:"value"`
 }
 
-
-func (ep1 *ExpParameter) Eq (ep2 *ExpParameter) bool {
-	if ep1.ParamObj != ep2.ParamObj {
+func (epp *ExpParameter) Eq(ep2 *ExpParameter) bool {
+	if epp.ParamObj != ep2.ParamObj {
 		return false
 	}
 
-	if !EqAttrbs(ep1.Attributes, ep2.Attributes) {
+	if !EqAttrbs(epp.Attributes, ep2.Attributes) {
 		return false
 	}
 
-	if ep1.Param != ep2.Param {
+	if epp.Param != ep2.Param {
 		return false
 	}
 
-	if ep1.Value != ep2.Value {
+	if epp.Value != ep2.Value {
 		return false
 	}
 	return true
@@ -1843,8 +1840,8 @@ func CreateExpParameter(paramObj string, attributes []AttrbStruct, param, value 
 // An error is returned if the attribute name (other than 'group') already exists
 func (epp *ExpParameter) AddAttribute(attrbName, attrbValue string) error {
 	// check whether the attribute name is valid for this parameter
-	if !ValidateAttribute(epp.ParamObj ,attrbName) {
-		return fmt.Errorf("attribute name %s not allowed for parameter object type %s\n",
+	if !ValidateAttribute(epp.ParamObj, attrbName) {
+		return fmt.Errorf("attribute name %s not allowed for parameter object type %s",
 			attrbName, epp.ParamObj)
 	}
 
@@ -1854,12 +1851,12 @@ func (epp *ExpParameter) AddAttribute(attrbName, attrbValue string) error {
 			return nil
 		}
 	}
-	
+
 	// if the attribute name is not 'group', report an attribute name conflict
-	if attrbName != "group" { 
+	if attrbName != "group" {
 		for _, attrb := range epp.Attributes {
 			if attrb.AttrbName == attrbName {
-				return fmt.Errorf("attribute name %s already exists for parameter object\n", attrbName)
+				return fmt.Errorf("attribute name %s already exists for parameter object", attrbName)
 			}
 		}
 	}
@@ -1869,7 +1866,7 @@ func (epp *ExpParameter) AddAttribute(attrbName, attrbValue string) error {
 	return nil
 }
 
-// An ExpCfg structure holds all of the ExpParameters for a named experiment
+// ExpCfg structure holds all of the ExpParameters for a named experiment
 type ExpCfg struct {
 	// Name is an identifier for a group of [ExpParameters].  No particular interpretation of this string is
 	// used, except as a referencing label when moving an ExpCfg into or out of a dictionary
@@ -1879,11 +1876,11 @@ type ExpCfg struct {
 	Parameters []ExpParameter `json:"parameters" yaml:"parameters"`
 }
 
-func (excg *ExpCfg) AddExpParameter(exparam *ExpParameter) {
-	excg.Parameters = append(excg.Parameters, *exparam)
+func (excfg *ExpCfg) AddExpParameter(exparam *ExpParameter) {
+	excfg.Parameters = append(excfg.Parameters, *exparam)
 }
 
-// An ExpCfgDict is a dictionary that holds [ExpCfg] objects in a map indexed by their Name.
+// ExpCfgDict is a dictionary that holds [ExpCfg] objects in a map indexed by their Name.
 type ExpCfgDict struct {
 	DictName string            `json:"dictname" yaml:"dictname"`
 	Cfgs     map[string]ExpCfg `json:"cfgs" yaml:"cfgs"`
@@ -1905,7 +1902,7 @@ func (ecd *ExpCfgDict) AddExpCfg(ec *ExpCfg, overwrite bool) error {
 	if !overwrite {
 		_, present := ecd.Cfgs[ec.Name]
 		if present {
-			return fmt.Errorf("Attempt to overwrite template ExpCfg %s\n", ec.Name)
+			return fmt.Errorf("attempt to overwrite template ExpCfg %s", ec.Name)
 		}
 	}
 	// save it
@@ -1983,11 +1980,10 @@ func ReadExpCfgDict(filename string, useYAML bool, dict []byte) (*ExpCfgDict, er
 
 // CreateExpCfg is a constructor. Saves the offered Name and initializes the slice of ExpParameters.
 func CreateExpCfg(name string) *ExpCfg {
-	expcfg := &ExpCfg{Name: name, Parameters: make([]ExpParameter, 0)}
+	excfg := &ExpCfg{Name: name, Parameters: make([]ExpParameter, 0)}
 
-	return expcfg
+	return excfg
 }
-
 
 // ValidateParameter returns an error if the paramObj, attributes, and param values don't
 // make sense taken together within an ExpParameter.
@@ -1998,13 +1994,13 @@ func ValidateParameter(paramObj string, attributes []AttrbStruct, param string) 
 
 	// the paramObj string has to be recognized as one of the permitted ones (stored in list ExpParamObjs)
 	if !slices.Contains(ExpParamObjs, paramObj) {
-		panic(fmt.Errorf("parameter paramObj %s is not recognized\n", paramObj))
+		panic(fmt.Errorf("parameter paramObj %s is not recognized", paramObj))
 	}
 
 	// check the validity of each attribute
 	for _, attrb := range attributes {
 		if !ValidateAttribute(paramObj, attrb.AttrbName) {
-			panic(fmt.Errorf("attribute %s not value for parameter object type %s\n", attrb.AttrbName, paramObj))	
+			panic(fmt.Errorf("attribute %s not value for parameter object type %s", attrb.AttrbName, paramObj))
 		}
 	}
 
@@ -2014,7 +2010,7 @@ func ValidateParameter(paramObj string, attributes []AttrbStruct, param string) 
 
 // AddParameter accepts the four values in an ExpParameter, creates one, and adds to the ExpCfg's list.
 // Returns an error if the parameters are not validated.
-func (expcfg *ExpCfg) AddParameter(paramObj string, attributes []AttrbStruct, param, value string) error {
+func (excfg *ExpCfg) AddParameter(paramObj string, attributes []AttrbStruct, param, value string) error {
 	// validate the offered parameter values
 	err := ValidateParameter(paramObj, attributes, param)
 	if err != nil {
@@ -2025,21 +2021,21 @@ func (expcfg *ExpCfg) AddParameter(paramObj string, attributes []AttrbStruct, pa
 	excp := CreateExpParameter(paramObj, attributes, param, value)
 
 	// save it
-	expcfg.Parameters = append(expcfg.Parameters, *excp)
+	excfg.Parameters = append(excfg.Parameters, *excp)
 	return nil
 }
 
 // WriteToFile stores the ExpCfg struct to the file whose name is given.
 // Serialization to json or to yaml is selected based on the extension of this name.
-func (dict *ExpCfg) WriteToFile(filename string) error {
+func (excfg *ExpCfg) WriteToFile(filename string) error {
 	pathExt := path.Ext(filename)
 	var bytes []byte
 	var merr error = nil
 
 	if pathExt == ".yaml" || pathExt == ".YAML" || pathExt == ".yml" {
-		bytes, merr = yaml.Marshal(*dict)
+		bytes, merr = yaml.Marshal(*excfg)
 	} else if pathExt == ".json" || pathExt == ".JSON" {
-		bytes, merr = json.MarshalIndent(*dict, "", "\t")
+		bytes, merr = json.MarshalIndent(*excfg, "", "\t")
 	}
 
 	if merr != nil {
@@ -2093,7 +2089,7 @@ func UpdateExpCfg(orgfile, updatefile string, useYAML bool, dict []byte) {
 		panic(err)
 	}
 
-	// read in the update parameters	
+	// read in the update parameters
 	updateCfg, err2 := ReadExpCfg(updatefile, useYAML, []byte{})
 	if err2 != nil {
 		panic(err2)
@@ -2106,8 +2102,7 @@ func UpdateExpCfg(orgfile, updatefile string, useYAML bool, dict []byte) {
 	expCfg.WriteToFile(orgfile)
 }
 
-
-// ExpParamObjs, ExpAttributes, and ExpParams hold descriptions of the types of objects
+// ExpParamObjs , ExpAttributes , and ExpParams hold descriptions of the types of objects
 // that are initialized by an exp file, for each the attributes of the object that can be tested for to determine
 // whether the object is to receive the configuration parameter, and the parameter types defined for each object type
 var ExpParamObjs []string
@@ -2140,17 +2135,17 @@ func GetExpParamDesc() ([]string, map[string][]string, map[string][]string) {
 // ReportErrs transforms a list of errors and transforms the non-nil ones into a single error
 // with comma-separated report of all the constituent errors, and returns it.
 func ReportErrs(errs []error) error {
-	err_msg := make([]string, 0)
+	errMsg := make([]string, 0)
 	for _, err := range errs {
 		if err != nil {
-			err_msg = append(err_msg, err.Error())
+			errMsg = append(errMsg, err.Error())
 		}
 	}
-	if len(err_msg) == 0 {
+	if len(errMsg) == 0 {
 		return nil
 	}
 
-	return errors.New(strings.Join(err_msg, ","))
+	return errors.New(strings.Join(errMsg, ","))
 }
 
 // CheckDirectories probes the file system for the existence
@@ -2192,13 +2187,13 @@ func CheckDirectories(dirs []string) (bool, error) {
 	return false, err
 }
 
-// CheckReadableFileNames probles the file system to ensure that every
+// CheckReadableFiles probles the file system to ensure that every
 // one of the argument filenames exists and is readable
 func CheckReadableFiles(names []string) (bool, error) {
 	return CheckFiles(names, true)
 }
 
-// CheckOpututFileNames probles the file system to ensure that every
+// CheckOutputFiles probles the file system to ensure that every
 // argument filename can be written.
 func CheckOutputFiles(names []string) (bool, error) {
 	return CheckFiles(names, false)

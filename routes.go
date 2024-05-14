@@ -72,22 +72,22 @@ var gNodes map[int]simple.Node = make(map[int]simple.Node)
 // network devices it connects to.
 func buildconnGraph(edges map[int][]int) graph.Graph {
 	connGraph := simple.NewWeightedUndirectedGraph(0, math.Inf(1))
-	for nodeId := range edges {
-		_, present := gNodes[nodeId]
+	for nodeID := range edges {
+		_, present := gNodes[nodeID]
 		if present {
 			continue
 		}
-		gNodes[nodeId] = simple.Node(nodeId)
+		gNodes[nodeID] = simple.Node(nodeID)
 	}
 
 	// transform the expression of edges input list to edges in the graph module representation
 
 	// MrNesbits device id and list of ids of edges it connects to
-	for nodeId, edgeList := range edges {
+	for nodeID, edgeList := range edges {
 		// for every neighbor in that list
-		for _, nbrId := range edgeList {
+		for _, nbrID := range edgeList {
 			// represent the edge (with weight 1) in the form that the graph module represents it
-			weightedEdge := simple.WeightedEdge{F: gNodes[nodeId], T: gNodes[nbrId], W: 1.0}
+			weightedEdge := simple.WeightedEdge{F: gNodes[nodeID], T: gNodes[nbrID], W: 1.0}
 			connGraph.SetWeightedEdge(weightedEdge)
 		}
 	}
@@ -127,8 +127,8 @@ func getSPTree(from int, connGraph graph.Graph) path.Shortest {
 func convertNodeSeq(nsQ []graph.Node) []int {
 	rtn := []int{}
 	for _, node := range nsQ {
-		nodeId, _ := strconv.Atoi(fmt.Sprintf("%d", node))
-		rtn = append(rtn, nodeId)
+		nodeID, _ := strconv.Atoi(fmt.Sprintf("%d", node))
+		rtn = append(rtn, nodeID)
 	}
 
 	return rtn
@@ -144,7 +144,7 @@ var connGraph graph.Graph
 // routeFrom returns the shortest path (as a sequence of network device identifiers)
 // from the named source to the named destination, through the provided graph (in MrNesbits
 // format of device ids)
-func routeFrom(srcId int, edges map[int][]int, dstId int) []int {
+func routeFrom(srcID int, edges map[int][]int, dstID int) []int {
 	// make sure we've built the path/graph respresentation
 	if !connGraphBuilt {
 		// buildconnGraph creates the graph, and sets the connGraphBuilt flag
@@ -158,23 +158,23 @@ func routeFrom(srcId int, edges map[int][]int, dstId int) []int {
 	// ultimately what routeFrom returns
 	var route []int
 
-	// if we have already an spTree rooted in srcId we can use it.
-	spTree, present := cachedSP[srcId]
+	// if we have already an spTree rooted in srcID we can use it.
+	spTree, present := cachedSP[srcID]
 
 	if present {
-		// get the path through the tree to the node with label dstId
+		// get the path through the tree to the node with label dstID
 		// (representing the MrNesbits device with that label)
-		nodeSeq, _ = spTree.To(int64(dstId))
+		nodeSeq, _ = spTree.To(int64(dstID))
 
 		// convert the sequence of graph/path nodes to a sequence of MrNesbits device ids
 		route = convertNodeSeq(nodeSeq)
 	} else {
 		// it may be that we have already a shortest path tree that is routed in the destination.
 		// if so, by symmetry the path is the same, just reversed.
-		spTree, present = cachedSP[dstId]
+		spTree, present = cachedSP[dstID]
 		if present {
-			// get the path from the graph node with label dstId to the graph node with label srcId
-			revNodeSeq, _ := spTree.To(int64(srcId))
+			// get the path from the graph node with label dstID to the graph node with label srcID
+			revNodeSeq, _ := spTree.To(int64(srcID))
 
 			// convert that sequence of graph nodes to a sequence of MrNesbits device ids
 			revRoute := convertNodeSeq(revNodeSeq)
@@ -185,11 +185,11 @@ func routeFrom(srcId int, edges map[int][]int, dstId int) []int {
 				route = append(route, revRoute[lenR-idx-1])
 			}
 		} else {
-			// we don't have a tree routed in either srcId or dstId, so make a tree rooted in srcId
-			spTree = getSPTree(srcId, connGraph)
+			// we don't have a tree routed in either srcID or dstID, so make a tree rooted in srcID
+			spTree = getSPTree(srcID, connGraph)
 
 			// get the path as a sequence of graph nodes, convert to a sequence of MrNesbits device id values
-			nodeSeq, _ = spTree.To(int64(dstId))
+			nodeSeq, _ = spTree.To(int64(dstID))
 			route = convertNodeSeq(nodeSeq)
 		}
 	}
@@ -198,11 +198,11 @@ func routeFrom(srcId int, edges map[int][]int, dstId int) []int {
 }
 
 type rtEndpts struct {
-	srcId, dstId int
+	srcID, dstID int
 }
 
-// commonNetId checks that intrfcA and intrfcB point at the same network and returns its name
-func commonNetId(intrfcA, intrfcB *intrfcStruct) int {
+// commonNetID checks that intrfcA and intrfcB point at the same network and returns its name
+func commonNetID(intrfcA, intrfcB *intrfcStruct) int {
 	if intrfcA.faces == nil || intrfcB.faces == nil {
 		panic("interface on route fails to face any network")
 	}
@@ -213,17 +213,17 @@ func commonNetId(intrfcA, intrfcB *intrfcStruct) int {
 	return intrfcA.faces.number
 }
 
-
 // compute identify of the interfaces between routeSteps rsA and rsB
 func intrfcsBetween(rsA, rsB int) (int, int) {
 	return getRouteStepIntrfcs(rsA, rsB)
 }
-/*
-	devA := topoDevById[rsA]
-	devB := topoDevById[rsB]
 
-	idA := devA.devId()
-	idB := devB.devId()
+/*
+	devA := topoDevByID[rsA]
+	devB := topoDevByID[rsB]
+
+	idA := devA.devID()
+	idB := devB.devID()
 
 	var intrfcA int = -1
 	var intrfcB int = -1
@@ -236,7 +236,7 @@ func intrfcsBetween(rsA, rsB int) (int, int) {
 
 	// find the interface on rsA that connects to rsB
 	for _, intrfc := range devA.devIntrfcs() {
-		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devId() == idB {
+		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devID() == idB {
 			intrfcA = intrfc.number
 			break
 		}
@@ -248,7 +248,7 @@ func intrfcsBetween(rsA, rsB int) (int, int) {
 
 	// find the interface on rsB that connects to rsA
 	for _, intrfc := range devB.devIntrfcs() {
-		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devId() == idA {
+		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devID() == idA {
 			intrfcB = intrfc.number
 			break
 		}
@@ -263,7 +263,7 @@ func intrfcsBetween(rsA, rsB int) (int, int) {
 	}
 
 	fmt.Printf("duplex connection not found between devices %s and %s\n",
-		topoDevById[rsA].devName(), topoDevById[rsB].devName())
+		topoDevByID[rsA].devName(), topoDevByID[rsB].devName())
 
 	return -1, -1
 }
@@ -271,32 +271,32 @@ func intrfcsBetween(rsA, rsB int) (int, int) {
 
 var pcktRtCache map[rtEndpts]*[]intrfcsToDev = make(map[rtEndpts]*[]intrfcsToDev)
 
-func findRoute(srcId, dstId int) *[]intrfcsToDev {
-	endpoints := rtEndpts{srcId: srcId, dstId: dstId}
+func findRoute(srcID, dstID int) *[]intrfcsToDev {
+	endpoints := rtEndpts{srcID: srcID, dstID: dstID}
 
 	rt, found := pcktRtCache[endpoints]
 	if found {
 		return rt
 	}
 
-	route := routeFrom(srcId, topoGraph, dstId)
+	route := routeFrom(srcID, topoGraph, dstID)
 	routePlan := make([]intrfcsToDev, 0)
 
 	for idx := 1; idx < len(route); idx++ {
-		devId := route[idx]
+		devID := route[idx]
 
-		srcIntrfcId, dstIntrfcId := intrfcsBetween(route[idx-1], devId)
+		srcIntrfcID, dstIntrfcID := intrfcsBetween(route[idx-1], devID)
 
-		networkId := -1
-		dstIntrfc := intrfcById[dstIntrfcId]
+		networkID := -1
+		dstIntrfc := intrfcByID[dstIntrfcID]
 
 		// if 'cable' is nil we're pointing through a network and
 		// use its id
 		if dstIntrfc.cable == nil {
-			networkId = dstIntrfc.faces.number
+			networkID = dstIntrfc.faces.number
 		}
 
-		istp := intrfcsToDev{srcIntrfcId: srcIntrfcId, dstIntrfcId: dstIntrfcId, netId: networkId, devId: devId}
+		istp := intrfcsToDev{srcIntrfcID: srcIntrfcID, dstIntrfcID: dstIntrfcID, netID: networkID, devID: devID}
 		routePlan = append(routePlan, istp)
 	}
 	pcktRtCache[endpoints] = &routePlan
