@@ -1,4 +1,4 @@
-module mrnes
+module github.com/iti/mrnes
 
 go 1.20
 
