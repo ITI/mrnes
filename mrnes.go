@@ -19,6 +19,9 @@ var devExecTimeTbl map[string]map[string]float64
 // QkNetSim is set from the command line, when selected uses 'quick' form of network simulation
 var QkNetSim bool = false
 
+// TaskSchedulerByHostName maps an identifier for the scheduler to the scheduler itself
+var TaskSchedulerByHostName map[string]*TaskScheduler = make(map[string]*TaskScheduler)
+
 // buildDevExecTimeTbl creates a map structure that stores information about
 // operations on switches and routers.
 //
@@ -245,15 +248,13 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 	// specified assignments
 	defaultParamList := make([]ExpParameter, 0)
 
-	// set defaults to ensure that every parameter that has to have a value does
+	// set defaults to ensure that every parameter that has to have a value does (except 'model')
 	for _, paramObj := range ExpParamObjs {
 		for _, param := range ExpParams[paramObj] {
 			vs := ""
 			switch param {
 			case "switch":
 				vs = "10e-6"
-			case "model":
-				vs = "cisco"
 			case "latency":
 				vs = "10e-3"
 			case "delay":
@@ -262,8 +263,6 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 				vs = "10"
 			case "buffer":
 				vs = "100"
-			case "CPU":
-				vs = "i7"
 			case "capacity":
 				vs = "10"
 			case "MTU":
@@ -271,26 +270,25 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 			case "trace":
 				vs = "false"
 			default:
-				msg := fmt.Sprintf("problem %s in default default parameters\n", param)
-				panic(msg)
+				vs = ""
 			}
 
-			wcAttrb := []AttrbStruct{AttrbStruct{AttrbName: "*", AttrbValue: ""}}
-			expParam := ExpParameter{ParamObj: paramObj, Attributes: wcAttrb, Param: param, Value: vs}
-			defaultParamList = append(defaultParamList, expParam)
+			if len(vs) > 0 {
+				wcAttrb := []AttrbStruct{AttrbStruct{AttrbName: "*", AttrbValue: ""}}
+				expParam := ExpParameter{ParamObj: paramObj, Attributes: wcAttrb, Param: param, Value: vs}
+				defaultParamList = append(defaultParamList, expParam)
+			}
 		}
 	}
 
 	// separate the parameters into the ParamObj groups they apply to
 	endptParams := []ExpParameter{}
-	filterParams := []ExpParameter{}
 	netParams := []ExpParameter{}
 	rtrParams := []ExpParameter{}
 	swtchParams := []ExpParameter{}
 	intrfcParams := []ExpParameter{}
 
 	endptParamsMod := []ExpParameter{}
-	filterParamsMod := []ExpParameter{}
 	netParamsMod := []ExpParameter{}
 	rtrParamsMod := []ExpParameter{}
 	swtchParamsMod := []ExpParameter{}
@@ -308,8 +306,6 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 			intrfcParams = append(intrfcParams, param)
 		case "Network":
 			netParams = append(netParams, param)
-		case "Filter":
-			filterParams = append(filterParams, param)
 		default:
 			panic("surprise ParamObj")
 		}
@@ -330,8 +326,6 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 				intrfcParamsMod = append(intrfcParamsMod, param)
 			case "Network":
 				netParamsMod = append(netParamsMod, param)
-			case "Filter":
-				filterParamsMod = append(filterParamsMod, param)
 			default:
 				panic("surprise ParamObj")
 			}
@@ -340,14 +334,12 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 
 	// reorder each list to assure the application order of most-general-first, and remove duplicates
 	endptParams = reorderExpParams(endptParams)
-	filterParams = reorderExpParams(filterParams)
 	rtrParams = reorderExpParams(rtrParams)
 	swtchParams = reorderExpParams(swtchParams)
 	intrfcParams = reorderExpParams(intrfcParams)
 	netParams = reorderExpParams(netParams)
 
 	endptParamsMod = reorderExpParams(endptParamsMod)
-	filterParamsMod = reorderExpParams(filterParamsMod)
 	rtrParamsMod = reorderExpParams(rtrParamsMod)
 	swtchParamsMod = reorderExpParams(swtchParamsMod)
 	intrfcParamsMod = reorderExpParams(intrfcParamsMod)
@@ -359,10 +351,6 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 	// default default we create in this program
 	orderedParamList := append(defaultParamList, endptParams...)
 	orderedParamList = append(orderedParamList, endptParamsMod...)
-
-	orderedParamList = append(orderedParamList, filterParams...)
-	orderedParamList = append(orderedParamList, filterParamsMod...)
-
 	orderedParamList = append(orderedParamList, rtrParams...)
 	orderedParamList = append(orderedParamList, rtrParamsMod...)
 
@@ -391,11 +379,6 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 		endptList = append(endptList, endpt)
 	}
 
-	filterList := []paramObj{}
-	for _, filter := range filterDevByID {
-		filterList = append(filterList, filter)
-	}
-
 	netList := []paramObj{}
 	for _, net := range networkByID {
 		netList = append(netList, net)
@@ -422,8 +405,6 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 			testList = intrfcList
 		case "Network":
 			testList = netList
-		case "Filter":
-			testList = filterList
 		}
 
 		// for every object in the constrained list test whether the attributes match.
@@ -504,10 +485,7 @@ var routerDevByID map[int]*routerDev
 var routerDevByName map[string]*routerDev
 
 var endptDevByID map[int]*endptDev
-var endptDevByName map[string]*endptDev
-
-var filterDevByID map[int]*filterDev
-var filterDevByName map[string]*filterDev
+var EndptDevByName map[string]*endptDev
 
 var switchDevByID map[int]*switchDev
 var switchDevByName map[string]*switchDev
@@ -619,10 +597,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	paramObjByName = make(map[string]paramObj)
 
 	endptDevByID = make(map[int]*endptDev)
-	endptDevByName = make(map[string]*endptDev)
-
-	filterDevByID = make(map[int]*filterDev)
-	filterDevByName = make(map[string]*filterDev)
+	EndptDevByName = make(map[string]*endptDev)
 
 	switchDevByID = make(map[int]*switchDev)
 	switchDevByName = make(map[string]*switchDev)
@@ -692,6 +667,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	for _, endpt := range topoCfg.Endpts {
 		// create a runtime representation from its desc representation
 		endptDev := createEndptDev(&endpt)
+		endptDev.initTaskScheduler()
 
 		// get name and id
 		endptName := endptDev.endptName
@@ -702,7 +678,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 		// for topoDev interface
 		addTopoDevLookup(endptID, endptName, endptDev)
 		endptDevByID[endptID] = endptDev
-		endptDevByName[endptName] = endptDev
+		EndptDevByName[endptName] = endptDev
 
 		// for paramObj interface
 		paramObjByID[endptID] = endptDev
@@ -710,28 +686,6 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 
 		// store id -> name for trace
 		tm.AddName(endptID, endptName, "endpt")
-	}
-
-	// fetch the filter descriptions
-	for _, filter := range topoCfg.Filters {
-		// create a runtime representation from its desc representation
-		filterDev := createFilterDev(&filter)
-
-		// get name and id
-		filterName := filterDev.filterName
-		filterID := filterDev.filterID
-
-		// save filterDev for lookup by Id and Name
-		addTopoDevLookup(filterID, filterName, filterDev)
-		filterDevByID[filterID] = filterDev
-		filterDevByName[filterName] = filterDev
-
-		// for paramObj interface
-		paramObjByID[filterID] = filterDev
-		paramObjByName[filterName] = filterDev
-
-		// store id -> name for trace
-		tm.AddName(filterID, filterName, "filter")
 	}
 
 	// fetch the network descriptions
@@ -774,28 +728,6 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 		}
 	}
 
-	for _, filterDesc := range topoCfg.Filters {
-		for _, intrfc := range filterDesc.Interfaces {
-
-			// create a runtime representation from its desc representation
-			is := createIntrfcStruct(&intrfc)
-
-			// save is for reference by id or name
-			intrfcByID[is.number] = is
-			intrfcByName[intrfc.Name] = is
-
-			// for paramObj interface
-			paramObjByID[is.number] = is
-			paramObjByName[intrfc.Name] = is
-
-			// store id -> name for trace
-			tm.AddName(is.number, intrfc.Name, "interface")
-
-			filter := filterDevByName[filterDesc.Name]
-			filter.addIntrfc(is)
-		}
-	}
-
 	for _, endptDesc := range topoCfg.Endpts {
 		for _, intrfc := range endptDesc.Interfaces {
 			// create a runtime representation from its desc representation
@@ -813,7 +745,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 			paramObjByName[intrfc.Name] = is
 
 			// look up endpting endpt, use not from endpt's desc representation
-			endpt := endptDevByName[endptDesc.Name]
+			endpt := EndptDevByName[endptDesc.Name]
 			endpt.addIntrfc(is)
 		}
 	}
@@ -846,18 +778,6 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	for _, rtrDesc := range topoCfg.Routers {
 		// loop over interfaces the router endpts
 		for _, intrfc := range rtrDesc.Interfaces {
-			// link the run-time representation of this interface to the
-			// run-time representation of the interface it connects, if any
-			// set the run-time pointer to the network faced by the interface
-			linkIntrfcStruct(&intrfc)
-		}
-	}
-
-	// link the connect fields, now that all interfaces are known
-	// loop over filters
-	for _, filterDesc := range topoCfg.Filters {
-		// loop over interfaces the filter endpts
-		for _, intrfc := range filterDesc.Interfaces {
 			// link the run-time representation of this interface to the
 			// run-time representation of the interface it connects, if any
 			// set the run-time pointer to the network faced by the interface
@@ -901,24 +821,24 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 
 	// put all the connections recorded in the Cabled and Wireless fields into the topoGraph
 	for _, dev := range topoDevByID {
-		devID := dev.devID()
+		devID := dev.DevID()
 		for _, intrfc := range dev.devIntrfcs() {
 			connected := false
 			if intrfc.cable != nil && compatibleIntrfcs(intrfc, intrfc.cable) {
-				peerID := intrfc.cable.device.devID()
+				peerID := intrfc.cable.device.DevID()
 				connectIds(topoGraph, devID, peerID, intrfc.number, intrfc.cable.number)
 				connected = true
 			}
 
 			if !connected && intrfc.carry != nil && compatibleIntrfcs(intrfc, intrfc.carry) {
-				peerID := intrfc.carry.device.devID()
+				peerID := intrfc.carry.device.DevID()
 				connectIds(topoGraph, devID, peerID, intrfc.number, intrfc.carry.number)
 				connected = true
 			}
 
 			if !connected && len(intrfc.wireless) > 0 {
 				for _, conn := range intrfc.wireless {
-					peerID := conn.device.devID()
+					peerID := conn.device.DevID()
 					connectIds(topoGraph, devID, peerID, intrfc.number, conn.number)
 				}
 			}
@@ -942,12 +862,12 @@ func checkConnections(tg map[int][]int) bool {
 
 	for srcID, dev := range topoDevByID {
 		srcType := dev.devType()
-		if srcType != endptCode && srcType != filterCode {
+		if srcType != endptCode {
 			continue
 		}
 		for dstID := range topoDevByID {
 			dstType := dev.devType()
-			if dstType != endptCode && dstType != filterCode {
+			if dstType != endptCode {
 				continue
 			}
 			if srcID == dstID {

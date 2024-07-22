@@ -197,6 +197,7 @@ func routeFrom(srcID int, edges map[int][]int, dstID int) []int {
 	return route
 }
 
+// rtEndpts holds the IDs of the starting and ending points of a route
 type rtEndpts struct {
 	srcID, dstID int
 }
@@ -213,80 +214,46 @@ func commonNetID(intrfcA, intrfcB *intrfcStruct) int {
 	return intrfcA.faces.number
 }
 
-// compute identify of the interfaces between routeSteps rsA and rsB
+// intrfcsBetween computes identify of the interfaces between routeSteps rsA and rsB
 func intrfcsBetween(rsA, rsB int) (int, int) {
 	return getRouteStepIntrfcs(rsA, rsB)
 }
 
-/*
-	devA := topoDevByID[rsA]
-	devB := topoDevByID[rsB]
-
-	idA := devA.devID()
-	idB := devB.devID()
-
-	var intrfcA int = -1
-	var intrfcB int = -1
-
-	// find the name of the network between devA and devB
-	netName := networkBetween(devA, devB)
-	if netName == "" {
-		panic("expected network name")
-	}
-
-	// find the interface on rsA that connects to rsB
-	for _, intrfc := range devA.devIntrfcs() {
-		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devID() == idB {
-			intrfcA = intrfc.number
-			break
-		}
-		if !intrfc.isConnected() && intrfc.faces.name == netName {
-			intrfcA = intrfc.number
-			break
-		}
-	}
-
-	// find the interface on rsB that connects to rsA
-	for _, intrfc := range devB.devIntrfcs() {
-		if intrfc.isConnected() && topoDevByName[intrfc.connects.device.devName()].devID() == idA {
-			intrfcB = intrfc.number
-			break
-		}
-		if !intrfc.isConnected() && intrfc.faces.name == netName {
-			intrfcB = intrfc.number
-			break
-		}
-	}
-
-	if intrfcA != -1 && intrfcB != -1 {
-		return intrfcA, intrfcB
-	}
-
-	fmt.Printf("duplex connection not found between devices %s and %s\n",
-		topoDevByID[rsA].devName(), topoDevByID[rsB].devName())
-
-	return -1, -1
-}
-*/
-
+// pcktRtCache is a cache holding routes that have been discovered, so that
+// they do not need to be rediscovered
 var pcktRtCache map[rtEndpts]*[]intrfcsToDev = make(map[rtEndpts]*[]intrfcsToDev)
 
+// findRoute analyzes the topology to discover a least-cost sequence
+// of interfaces through which to pass in order to pass from the source device
+// whose ID is given to the destination device
 func findRoute(srcID, dstID int) *[]intrfcsToDev {
 	endpoints := rtEndpts{srcID: srcID, dstID: dstID}
 
+	// if we found and cached it already, return the cached route
 	rt, found := pcktRtCache[endpoints]
 	if found {
 		return rt
 	}
 
+	// routeFrom will return a sequence of device IDs, which
+	// need to expanded to carry all of the information about a routing
+	// step that is expected when traversing a route
 	route := routeFrom(srcID, topoGraph, dstID)
+
+	// struct intrfcsToDev describes a step in the route
 	routePlan := make([]intrfcsToDev, 0)
 
+	// touch each device named in the route discovered from the graph analysis
 	for idx := 1; idx < len(route); idx++ {
+
+		// what's the ID of the device at this step of the route?
 		devID := route[idx]
 
+		// what are the identities of the interface out of which the route passes
+		// from the previous device and the interface into which the route passes to reach devID
 		srcIntrfcID, dstIntrfcID := intrfcsBetween(route[idx-1], devID)
 
+		// if there is a network between the previous route device and devID, identify it
 		networkID := -1
 		dstIntrfc := intrfcByID[dstIntrfcID]
 

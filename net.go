@@ -94,17 +94,13 @@ func (np *NetworkPortal) SetQkNetSim(qknetsim bool) {
 	np.QkNetSim = qknetsim
 }
 
-// EndptCPU helps NetworkPortal implement the mrnesbits NetworkPortal interface,
-// returning the CPU type associated with a named endpt.  Present because the
+// EndptCPUModel helps NetworkPortal implement the mrnesbits NetworkPortal interface,
+// returning the CPU model associated with a named endpt.  Present because the
 // application layer does not otherwise have visibility into the network topology
-func (np *NetworkPortal) EndptCPU(devName string) string {
-	endpt, present := endptDevByName[devName]
+func (np *NetworkPortal) EndptCPUModel(devName string) string {
+	endpt, present := EndptDevByName[devName]
 	if present {
-		return endpt.endptCPU
-	}
-	filter, present := filterDevByName[devName]
-	if present {
-		return filter.filterCPU
+		return endpt.endptModel
 	}
 	return ""
 }
@@ -292,7 +288,6 @@ const (
 	endptCode devCode = iota
 	switchCode
 	routerCode
-	filterCode
 	unknownCode
 )
 
@@ -305,8 +300,6 @@ func devCodeFromStr(code string) devCode {
 		return switchCode
 	case "Router", "router", "rtr":
 		return routerCode
-	case "Filter", "filter":
-		return filterCode
 	default:
 		return unknownCode
 	}
@@ -321,8 +314,6 @@ func devCodeToStr(code devCode) string {
 		return "Switch"
 	case routerCode:
 		return "Router"
-	case filterCode:
-		return "Filter"
 	case unknownCode:
 		return "Unknown"
 	}
@@ -411,7 +402,7 @@ func nxtConnectID() int {
 // the topDev interface specifies the functionality different device types provide
 type topoDev interface {
 	devName() string              // every device has a unique name
-	devID() int                   // every device has a unique integer id
+	DevID() int                   // every device has a unique integer id
 	devType() devCode             // every device is one of the devCode types
 	devIntrfcs() []*intrfcStruct  // we can get from devices a list of the interfaces they endpt, if any
 	devDelay(any) float64         // every device can be be queried for the delay it introduces for an operation
@@ -454,6 +445,7 @@ type intrfcState struct {
 	bufferSize  float64         // buffer capacity (in Mbytes)
 	latency     float64         // time the leading bit takes to traverse the wire out of the interface
 	delay       float64         // time the leading bit takes to traverse the interface
+	empties     float64         // time when another packet can enter the egress side of the interface
 	mtu         int             // maximum packet size (bytes)
 	trace       bool            // switch for calling add trace
 	active      map[int]float64 // id of a connection actively passing through the interface, and its bandwidth
@@ -468,6 +460,7 @@ func createIntrfcState() *intrfcState {
 	iss.bufferSize = 0.0 // not really using bufferSize yet
 	iss.delay = 1e+6     // in seconds!  Set this way so that if not initialized we'll notice
 	iss.latency = 1e+6
+	iss.empties = 0.0
 	iss.mtu = 1500 // in bytes Set for Ethernet2 MTU, should change if wireless
 	iss.active = make(map[int]float64)
 	iss.ingressLoad = 0.0
@@ -497,8 +490,6 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 		is.devType = routerCode
 	case "Switch":
 		is.devType = switchCode
-	case "Filter":
-		is.devType = filterCode
 	}
 
 	// The desc description gives the name of the device endpting the interface.
@@ -636,7 +627,6 @@ type networkStruct struct {
 	netMedia    networkMedia  // communication fabric, e.g., wired, wireless
 	netRouters  []*routerDev  // list of pointers to routerDevs with interfaces that face this subnetwork
 	netSwitches []*switchDev  // list of pointers to routerDevs with interfaces that face this subnetwork
-	netFilters  []*filterDev  // list of pointers to routerDevs with interfaces that face this subnetwork
 	netEndpts   []*endptDev   // list of pointers to routerDevs with interfaces that face this subnetwork
 	netState    *networkState // pointer to a block of information comprising the network 'state'
 }
@@ -672,14 +662,7 @@ func (ns *networkStruct) initNetworkStruct(nd *NetworkDesc) {
 	for _, endptName := range nd.Endpts {
 		// use the router name from the desc representation to find the run-time pointer
 		// to the router and append to the network's list
-		ns.addEndpt(endptDevByName[endptName])
-	}
-
-	ns.netFilters = make([]*filterDev, 0)
-	for _, filterName := range nd.Filters {
-		// use the router name from the desc representation to find the run-time pointer
-		// to the router and append to the network's list
-		ns.addFilter(filterDevByName[filterName])
+		ns.addEndpt(EndptDevByName[endptName])
 	}
 
 	ns.netSwitches = make([]*switchDev, 0)
@@ -714,7 +697,6 @@ func createNetworkStruct(nd *NetworkDesc) *networkStruct {
 	// initNetworkStruct after the router constructors are called
 	ns.netRouters = make([]*routerDev, 0)
 	ns.netEndpts = make([]*endptDev, 0)
-	ns.netFilters = make([]*filterDev, 0)
 
 	// make the state structure, will flesh it out from run-time configuration parameters
 	ns.netState = createNetworkState(ns.name)
@@ -818,17 +800,6 @@ func (ns *networkStruct) addEndpt(newendpt *endptDev) {
 	ns.netEndpts = append(ns.netEndpts, newendpt)
 }
 
-// addFilter includes the filter given as input parameter on the network list of filters that face it
-func (ns *networkStruct) addFilter(newfilter *filterDev) {
-	// skip if filter already exists in network netFilters list
-	for _, filter := range ns.netFilters {
-		if filter == newfilter || filter.filterName == newfilter.filterName {
-			return
-		}
-	}
-	ns.netFilters = append(ns.netFilters, newfilter)
-}
-
 // addSwitch includes the swtch given as input parameter on the network list of swtchs that face it
 func (ns *networkStruct) addSwitch(newswtch *switchDev) {
 	// skip if swtch already exists in network netSwitches list
@@ -845,162 +816,14 @@ func (ns *networkStruct) availBndwdth() float64 {
 	return math.Max(ns.netState.bndwdth-ns.netState.load, 0.0)
 }
 
-// a filterDev holds information about a filter
-type filterDev struct {
-	filterName    string          // unique name
-	filterModel   string          // type of CPU the filter uses
-	filterCPU     string          // type of CPU the filter uses
-	filterGroups  []string        // list of groups to which filter belongs
-	filterID      int             // unique integer id
-	filterIntrfcs []*intrfcStruct // list of network interfaces embedded in the filter
-	filterState   *filterState    // a struct holding filter state
-}
-
-// a filterState holds extra informat used by the filter
-type filterState struct {
-	rngstrm           *rngstream.RngStream // pointer to a random number generator
-	filterAccelerator bool                 // whether there is a crypto accelerator on-board
-	trace             bool                 // switch for calling add trace
-	active            map[int]float64
-	load              float64
-	packets           int // number of packets presently in filter
-}
-
-// matchParam is for other paramObj objects a method for seeing whether
-// the device attribute matches the input.  'cept the filterDev is not declared
-// to have any such attributes, so this function (included to let filterDev be
-// a paramObj) returns false.  Included to allow filterDev to satisfy paramObj interface requirements
-func (filter *filterDev) matchParam(attrbName, attrbValue string) bool {
-	switch attrbName {
-	case "name":
-		return filter.filterName == attrbValue
-	case "group":
-		return slices.Contains(filter.filterGroups, attrbValue)
-	case "CPU":
-		return filter.filterCPU == attrbValue
-	case "model":
-		return filter.filterModel == attrbValue
-	}
-
-	// an error really, as we should match only the names given in the switch statement above
-	return false
-}
-
-// setParam gives a value to a filterDev parameter.  The design allows only
-// the CPU parameter to be set, which is allowed here
-func (filter *filterDev) setParam(param string, value valueStruct) {
-	switch param {
-	case "CPU":
-		filter.filterCPU = value.stringValue
-	case "trace":
-		filter.filterState.trace = value.boolValue
-	case "model":
-		filter.filterModel = value.stringValue
-	case "accelerator":
-		filter.filterState.filterAccelerator = value.boolValue
-	}
-}
-
-// paramObjName helps filterDev satisfy paramObj interface, returns the filter's name
-func (filter *filterDev) paramObjName() string {
-	return filter.filterName
-}
-
-// createFilterDev is a constructor, using information from the desc description of the filter
-func createFilterDev(filterDesc *FilterDesc) *filterDev {
-	filter := new(filterDev)
-	filter.filterName = filterDesc.Name // unique name
-	filter.filterModel = filterDesc.Model
-	filter.filterCPU = filterDesc.CPU
-	filter.filterID = nxtID()                       // unique integer id, generated at model load-time
-	filter.filterIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
-	filter.filterGroups = filterDesc.Groups
-	filter.filterState = createFilterState(filter.filterName)
-	return filter
-}
-
-func createFilterState(name string) *filterState {
-	fs := new(filterState)
-	fs.active = make(map[int]float64)
-	fs.trace = false
-	fs.active = make(map[int]float64)
-	fs.load = 0.0
-	fs.packets = 0
-	fs.rngstrm = rngstream.New(name)
-	return fs
-}
-
-// addIntrfc appends the input intrfcStruct to the list of interfaces embedded in the filter.
-func (filter *filterDev) addIntrfc(intrfc *intrfcStruct) {
-	filter.filterIntrfcs = append(filter.filterIntrfcs, intrfc)
-}
-
-// rng resturns the string type description of the CPU running the filter
-func (filter *filterDev) CPU() string {
-	return filter.filterCPU
-}
-
-// devName returns the filter name, as part of the topoDev interface
-func (filter *filterDev) devName() string {
-	return filter.filterName
-}
-
-// devID returns the filter integer id, as part of the topoDev interface
-func (filter *filterDev) devID() int {
-	return filter.filterID
-}
-
-// devType returns the filter's device type, as part of the topoDev interface
-func (filter *filterDev) devType() devCode {
-	return filterCode
-}
-
-// devIntrfcs returns the filter's list of interfaces, as part of the topoDev interface
-func (filter *filterDev) devIntrfcs() []*intrfcStruct {
-	return filter.filterIntrfcs
-}
-
-// devState returns the filter's state struct, as part of the topoDev interface
-func (filter *filterDev) devState() any {
-	return filter.filterState
-}
-
-// devRng returns a pointer to the filter's rng point, as part of the topoDev interface
-func (filter *filterDev) devRng() *rngstream.RngStream {
-	return filter.filterState.rngstrm
-}
-
-func (filter *filterDev) LogNetEvent(time vrtime.Time, execID int, connectID int, op string, isPckt bool, rate float64) {
-	if !filter.filterState.trace {
-		return
-	}
-	devTraceMgr.AddTrace(time, execID, connectID, filter.filterID, op, isPckt, rate)
-}
-
-// devAddActive adds an active connection, as part of the topoDev interface.  Not used for filters, yet
-func (filter *filterDev) devAddActive(nme *networkMsg) {
-	filter.filterState.active[nme.connectID] = nme.rate
-}
-
-// devRmActive removes an active connection, as part of the topoDev interface.  Not used for filters, yet
-func (filter *filterDev) devRmActive(connectID int) {
-	delete(filter.filterState.active, connectID)
-}
-
-// devDelay returns the state-dependent delay for passage through the device, as part of the topoDev interface.
-// Not really applicable to filter, so zero is returned
-func (filter *filterDev) devDelay(arg any) float64 {
-	return 0.0
-}
-
 // a endptDev holds information about a endpt
 type endptDev struct {
 	endptName    string   // unique name
 	endptGroups  []string // list of groups to which endpt belongs
-	endptCPU     string   // type of CPU the endpt uses
+	endptModel   string   // model of CPU the endpt uses
 	endptEUD     bool
 	endptCores   int
-	endptModel   string          // unique name
+	endptSched   *TaskScheduler  // shares an endpoint's cores among computing tasks
 	endptID      int             // unique integer id
 	endptIntrfcs []*intrfcStruct // list of network interfaces embedded in the endpt
 	endptState   *endptState     // a struct holding endpt state
@@ -1027,8 +850,6 @@ func (endpt *endptDev) matchParam(attrbName, attrbValue string) bool {
 		return slices.Contains(endpt.endptGroups, attrbValue)
 	case "model":
 		return endpt.endptModel == attrbValue
-	case "CPU":
-		return endpt.endptCPU == attrbValue
 	}
 
 	// an error really, as we should match only the names given in the switch statement above
@@ -1036,11 +857,9 @@ func (endpt *endptDev) matchParam(attrbName, attrbValue string) bool {
 }
 
 // setParam gives a value to a endptDev parameter.  The design allows only
-// the CPU parameter to be set, which is allowed here
+// the CPU model parameter to be set, which is allowed here
 func (endpt *endptDev) setParam(param string, value valueStruct) {
 	switch param {
-	case "CPU":
-		endpt.endptCPU = value.stringValue
 	case "trace":
 		endpt.endptState.trace = value.boolValue
 	case "model":
@@ -1058,7 +877,6 @@ func createEndptDev(endptDesc *EndptDesc) *endptDev {
 	endpt := new(endptDev)
 	endpt.endptName = endptDesc.Name // unique name
 	endpt.endptModel = endptDesc.Model
-	endpt.endptCPU = endptDesc.CPU
 	endpt.endptEUD = endptDesc.EUD
 	endpt.endptCores = endptDesc.Cores
 	endpt.endptID = nxtID()                       // unique integer id, generated at model load-time
@@ -1079,14 +897,20 @@ func createEndptState(name string) *endptState {
 	return eps
 }
 
+func (endpt *endptDev) initTaskScheduler() {
+	scheduler := CreateTaskScheduler(endpt.endptCores)
+	endpt.endptSched = scheduler
+	TaskSchedulerByHostName[endpt.endptName] = scheduler
+}
+
 // addIntrfc appends the input intrfcStruct to the list of interfaces embedded in the endpt.
 func (endpt *endptDev) addIntrfc(intrfc *intrfcStruct) {
 	endpt.endptIntrfcs = append(endpt.endptIntrfcs, intrfc)
 }
 
-// rng resturns the string type description of the CPU running the endpt
-func (endpt *endptDev) CPU() string {
-	return endpt.endptCPU
+// rng resturns the string type description of the CPU model running the endpt
+func (endpt *endptDev) CPUModel() string {
+	return endpt.endptModel
 }
 
 // devName returns the endpt name, as part of the topoDev interface
@@ -1095,7 +919,7 @@ func (endpt *endptDev) devName() string {
 }
 
 // devID returns the endpt integer id, as part of the topoDev interface
-func (endpt *endptDev) devID() int {
+func (endpt *endptDev) DevID() int {
 	return endpt.endptID
 }
 
@@ -1231,7 +1055,7 @@ func (swtch *switchDev) devName() string {
 }
 
 // devID returns the switch integer id, as part of the topoDev interface
-func (swtch *switchDev) devID() int {
+func (swtch *switchDev) DevID() int {
 	return swtch.switchID
 }
 
@@ -1367,7 +1191,7 @@ func (router *routerDev) devName() string {
 }
 
 // devID returns the switch integer id, as part of the topoDev interface
-func (router *routerDev) devID() int {
+func (router *routerDev) DevID() int {
 	return router.routerID
 }
 
@@ -1542,8 +1366,12 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	execID int, isPckt bool, rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction,
 	lossCxt any, lossFunc evtm.EventHandlerFunction) any {
 
-	srcID := topoDevByName[srcDev].devID()
-	dstID := topoDevByName[dstDev].devID()
+	if rtnCxt == nil {
+		panic(fmt.Errorf("empty context given to EnterNetwork"))
+	}
+
+	srcID := topoDevByName[srcDev].DevID()
+	dstID := topoDevByName[dstDev].DevID()
 
 	// get the route from srcID to dstID
 	route := findRoute(srcID, dstID)
@@ -1677,14 +1505,28 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	thisDev := intrfc.device
 	thisDev.devRmActive(nm.connectID)
 
+	nowInSecs := evtMgr.CurrentSeconds()
+	nowInVTime := evtMgr.CurrentTime()
+	var delay float64
+
 	// if this is a flow, mark that this connection is passing through the interface
 	if !nm.carriesPckt() {
 		intrfc.state.active[nm.connectID] = nm.rate
-		intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", false, nm.rate)
-		thisDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", false, nm.rate)
+		intrfc.LogNetEvent(nowInVTime, nm.execID, nm.connectID, "enter", false, nm.rate)
+		thisDev.LogNetEvent(nowInVTime, nm.execID, nm.connectID, "exit", false, nm.rate)
+	} else {
+		// look up when the interface will be free to take this packet
+		enterIntrfcTime := math.Max(nowInSecs, intrfc.state.empties)
+
+		// compute passage time based on bandwidth and message size
+		msgLen := float64(nm.msgLen*8) / 1e+6
+
+		delay = msgLen / intrfc.availBndwdth(false)
+
+		// remember when this packet clears the buffer.  Assumes FCFS queuing
+		intrfc.state.empties = enterIntrfcTime + delay
 	}
-	// get delay through interface and schedule arrival at exitEgressIntrfc
-	delay := intrfc.state.delay
+
 	evtMgr.Schedule(egressIntrfc, nm, exitEgressIntrfc, vrtime.SecondsToTime(delay))
 
 	// event-handlers are required to return _something_
@@ -1699,6 +1541,7 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	nm := msg.(networkMsg)
 	isPckt := nm.carriesPckt()
 
+	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
 
 	// transitDelay will differentiate between point-to-point wired connection and passage through a network
@@ -1788,6 +1631,7 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	isPckt := nm.carriesPckt()
 
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
+	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 
 	// if the arrival is a packet look for congestion and drop the packet
 	if isPckt && intrfc.congested(true) {
@@ -1827,7 +1671,7 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 
 // exitIngressIntrfc is the event handler for the arrival of a message at an interface facing the connection
 // through which the networkMsg arrived. When this event handler is called the entire
-// msg is exiting. If this device is a endpt or filter then accept the message
+// msg is exiting. If this device is a endpt then accept the message
 // and push it into the CompPattern Func scheduling system. Otherwise compute the time the edge hits
 // the egress interface on the other side of device and schedule that arrival
 func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) any {
@@ -1849,12 +1693,12 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 	}
 
 	// log entry of packet into device
-	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
+	//intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 
 	// check whether to leave the network. N.B., passage through switches and routers are not
 	// treated as leaving the network
 	devCode := intrfc.device.devType()
-	if devCode == endptCode || devCode == filterCode {
+	if devCode == endptCode {
 		// schedule return into comp pattern system, where requested
 		activePortal.Depart(evtMgr, nm)
 		return nil
