@@ -55,7 +55,7 @@ func getRouteStepIntrfcs(srcID, dstID int) (int, int) {
 	return intrfcs.i, intrfcs.j
 }
 
-// NetworkPortal implements the mrnesbits interface used to pass
+// NetworkPortal implements the pces interface used to pass
 // traffic between the application layer and the network sim
 type NetworkPortal struct {
 	QkNetSim    bool
@@ -94,7 +94,7 @@ func (np *NetworkPortal) SetQkNetSim(qknetsim bool) {
 	np.QkNetSim = qknetsim
 }
 
-// EndptCPUModel helps NetworkPortal implement the mrnesbits NetworkPortal interface,
+// EndptCPUModel helps NetworkPortal implement the pces NetworkPortal interface,
 // returning the CPU model associated with a named endpt.  Present because the
 // application layer does not otherwise have visibility into the network topology
 func (np *NetworkPortal) EndptCPUModel(devName string) string {
@@ -183,7 +183,7 @@ type NameType struct {
 	Type string
 }
 
-// TraceManager implements the mrnesbits TraceManager interface. It is
+// TraceManager implements the pces TraceManager interface. It is
 // use to gather information about a simulation model and an execution of that model
 type TraceManager struct {
 	// experiment uses trace
