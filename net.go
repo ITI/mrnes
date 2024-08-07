@@ -877,7 +877,6 @@ func createEndptDev(endptDesc *EndptDesc) *endptDev {
 	endpt := new(endptDev)
 	endpt.endptName = endptDesc.Name // unique name
 	endpt.endptModel = endptDesc.Model
-	endpt.endptEUD = endptDesc.EUD
 	endpt.endptCores = endptDesc.Cores
 	endpt.endptID = nxtID()                       // unique integer id, generated at model load-time
 	endpt.endptIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later

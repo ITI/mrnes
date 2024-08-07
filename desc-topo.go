@@ -997,7 +997,6 @@ type EndptDesc struct {
 	Name       string       `json:"name" yaml:"name"`
 	Groups     []string     `json:"groups" yaml:"groups"`
 	Model      string       `json:"model" yaml:"model"`
-	EUD        bool         `json:"eud" yaml:"eud"`
 	Cores      int          `json:"cores" yaml:"cores"`
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
@@ -1007,10 +1006,7 @@ type EndptFrame struct {
 	Name       string // unique string identifier
 	Groups     []string
 	Model      string
-	EUD        bool
-	Server     bool
 	Cores      int
-	EndptType  string         // parameter used to index into execution time tables
 	Interfaces []*IntrfcFrame // list of interfaces that describe the networks the endpt connects to
 }
 
@@ -1019,22 +1015,21 @@ func DefaultEndptName(name string) string {
 	return fmt.Sprintf("endpt(%s).(%d)", name, numberOfEndpts)
 }
 
-// CreateHost is a constructor.  It creates an endpoint frame with the EUD flag set to false
+// CreateHost is a constructor.  It creates an endpoint frame that sets the Host flag
 func CreateHost(name, model string, cores int) *EndptFrame {
 	host := CreateEndpt(name, model, cores)
 	host.AddGroup("Host")
 	return host
 }
 
-// CreateNode is a constructor.  It creates an endpoint frame with the EUD flag set to false
+// CreateNode is a constructor.  It creates an endpoint frame, does not mark with Host, Server, or EUD 
 func CreateNode(name, model string, cores int) *EndptFrame {
 	return CreateEndpt(name, model, cores)
 }
 
-// CreateSrvr is a constructor.  It creates an endpoint frame with the EUD flag set to false and the server flag to true
+// CreateSrvr is a constructor.  It creates an endpoint frame and marks it as a server
 func CreateSrvr(name, model string, cores int) *EndptFrame {
 	endpt := CreateEndpt(name, model, cores)
-	endpt.SetSrvr()
 	endpt.AddGroup("Server")
 	return endpt
 }
@@ -1042,7 +1037,6 @@ func CreateSrvr(name, model string, cores int) *EndptFrame {
 // CreateEUD is a constructor.  It creates an endpoint frame with the EUD flag set to true
 func CreateEUD(name, model string, cores int) *EndptFrame {
 	epf := CreateEndpt(name, model, cores)
-	epf.SetEUD()
 	epf.AddGroup("EUD")
 	return epf
 }
@@ -1054,7 +1048,6 @@ func CreateEndpt(name, model string, cores int) *EndptFrame {
 	numberOfEndpts += 1
 
 	epf.Model = model
-	epf.EUD = false // default is that endpoint is not an EUD but a host
 	epf.Cores = cores
 
 	// get a (presumeably unique) string name
@@ -1077,7 +1070,6 @@ func (epf *EndptFrame) Transform() EndptDesc {
 	hd.Name = epf.Name
 	hd.Model = epf.Model
 	hd.Groups = epf.Groups
-	hd.EUD = epf.EUD
 	hd.Cores = epf.Cores
 
 	// serialize the interfaces by calling the interface transformation function
@@ -1108,24 +1100,34 @@ func (epf *EndptFrame) AddIntrfc(iff *IntrfcFrame) error {
 	return nil
 }
 
-// SetEUD sets to true the endpoint frame flag indicating that the endpoint is an EUD
+// SetEUD includes EUD into the group list
 func (epf *EndptFrame) SetEUD() {
-	epf.EUD = true
+	epf.AddGroup("EUD")
 }
 
-// IsEUD returns the endpoint frame flag indicating whether the endpoint is an EUD
+// IsEUD indicates whether EUD is in the group list
 func (epf *EndptFrame) IsEUD() bool {
-	return epf.EUD
+	return slices.Contains(epf.Groups, "EUD") 
 }
 
-// SetSrvr sets to true the endpoint frame flag indicating that the endpoint is a server
+// SetHost includes Host into the group list
+func (epf *EndptFrame) SetHost() {
+	epf.AddGroup("Host")
+}
+
+// IsHost indicates whether Host is in the group list
+func (epf *EndptFrame) IsHost() bool {
+	return slices.Contains(epf.Groups, "Host") 
+}
+
+// SetSrvr adds Server to the endpoint groups list
 func (epf *EndptFrame) SetSrvr() {
-	epf.Server = true
+	epf.AddGroup("Server")
 }
 
-// IsSrvr returns the endpoint frame flag indicating whether the endpoint is a server
+// IsSrvr indicates whether Server is in the endpoint groups list
 func (epf *EndptFrame) IsSrvr() bool {
-	return epf.Server
+	return slices.Contains(epf.Groups, "Server") 
 }
 
 // SetCores records in the endpoint frame the number of cores the model assumes are available
@@ -2016,7 +2018,7 @@ func GetExpParamDesc() ([]string, map[string][]string, map[string][]string) {
 		ExpAttributes["Network"] = []string{"name", "group", "media", "scale", "*"}
 		ExpParams = make(map[string][]string)
 		ExpParams["Switch"] = []string{"buffer", "trace"}
-		ExpParams["Route"] = []string{"buffer", "trace"}
+		ExpParams["Router"] = []string{"buffer", "trace"}
 		ExpParams["Endpt"] = []string{"trace", "model"}
 		ExpParams["Network"] = []string{"latency", "bandwidth", "capacity", "trace"}
 		ExpParams["Interface"] = []string{"latency", "bandwidth", "MTU", "trace"}

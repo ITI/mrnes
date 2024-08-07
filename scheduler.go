@@ -19,12 +19,12 @@ import (
 
 // Task describes the service requirements of an operation on a msg
 type Task struct {
-	opType       string                    // what operation is being performed
+	OpType       string                    // what operation is being performed
 	req          float64                   // required service
 	ts           float64                   // timeslice
 	completeFunc evtm.EventHandlerFunction // call when finished
 	context      any                       // remember this from caller, to return when finished
-	msg          any                       // information package being carried
+	Msg          any                       // information package being carried
 }
 
 // unique identifier for each task
@@ -33,7 +33,7 @@ var nxtTaskIdx int = 0
 // createTask is a constructor
 func createTask(op string, req, ts float64, msg any, context any, complete evtm.EventHandlerFunction) *Task {
 	nxtTaskIdx += 1
-	return &Task{opType: op, req: req, ts: ts, msg: msg, context: context, completeFunc: complete}
+	return &Task{OpType: op, req: req, ts: ts, Msg: msg, context: context, completeFunc: complete}
 }
 
 // reqSrvHeap and its methods implement a min-priority heap
@@ -114,7 +114,7 @@ func (ops *TaskScheduler) joinQueue(evtMgr *evtm.EventManager, task *Task) bool 
 
 	// if the task is going to complete we can schedule the event handler for the end of task
 	if finished {
-		evtMgr.Schedule(task.context, task.msg, task.completeFunc, vrtime.SecondsToTime(task.req))
+		evtMgr.Schedule(task.context, task, task.completeFunc, vrtime.SecondsToTime(task.req))
 	}
 	task.req = math.Max(task.req-task.ts, 0.0)
 	heap.Push(&ops.inservice, task)
