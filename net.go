@@ -784,6 +784,8 @@ func (ns *networkStruct) setParam(paramType string, value valueStruct) {
 		ns.netState.latency = fltValue
 	case "bandwidth":
 		ns.netState.bndwdth = fltValue
+	case "capacity":
+		ns.netState.capacity = fltValue
 	case "trace":
 		ns.netState.trace = value.boolValue
 	case "drop":
