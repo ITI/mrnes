@@ -63,7 +63,7 @@ func ShowPath(src int, dest int, idToName map[int]string, thru map[int]int,
 }
 
 // the gNodes data structure implements a graph representation of the MrNesbits network
-// in a form that let's us use the graph module.
+// in a form that lets us use the graph module.
 // gNodes[i] refers to the MrNesbits network device with id i
 var gNodes map[int]simple.Node = make(map[int]simple.Node)
 
@@ -138,11 +138,11 @@ func convertNodeSeq(nsQ []graph.Node) []int {
 // once the connection graph is constructed.
 var connGraphBuilt bool = false
 
-// connGraph is the path/graph representation of the MrNesbits network graph
+// connGraph is the path/graph representation of the mrnes network graph
 var connGraph graph.Graph
 
 // routeFrom returns the shortest path (as a sequence of network device identifiers)
-// from the named source to the named destination, through the provided graph (in MrNesbits
+// from the named source to the named destination, through the provided graph (in mrnes
 // format of device ids)
 func routeFrom(srcID int, edges map[int][]int, dstID int) []int {
 	// make sure we've built the path/graph respresentation
@@ -154,7 +154,7 @@ func routeFrom(srcID int, edges map[int][]int, dstID int) []int {
 	// nodeSeq holds the desired path expressed as a sequence of path/graph nodes
 	var nodeSeq []graph.Node
 
-	// route holds the desired path expressed as a sequence of MrNesbits device ids,
+	// route holds the desired path expressed as a sequence of mrnes device ids,
 	// ultimately what routeFrom returns
 	var route []int
 

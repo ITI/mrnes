@@ -22,6 +22,8 @@ type rtnRecord struct {
 	count   int
 	rtnFunc evtm.EventHandlerFunction
 	rtnCxt  any
+	rtnLoss *float64
+	rtnBndwdth *float64
 }
 
 type intPair struct {
@@ -111,16 +113,29 @@ func (np *NetworkPortal) Depart(evtMgr *evtm.EventManager, nm networkMsg) {
 	connectID := nm.connectID
 	np.returnTo[connectID].count -= 1
 
+	rtnMsg := new(RtnMsgStruct)
+	rtnMsg.Latency = evtMgr.CurrentSeconds() - nm.startTime
+	rtnMsg.Bndwdth = nm.rate
+	rtnMsg.PrLoss = (1.0-nm.prArrvl)
+	rtnMsg.Msg = nm.msg
+
 	rtnRec := np.returnTo[connectID]
 	rtnCxt := rtnRec.rtnCxt
 	rtnFunc := rtnRec.rtnFunc
 
 	// schedule the re-integration into the application simulator
-	evtMgr.Schedule(rtnCxt, nm.msg, rtnFunc, vrtime.SecondsToTime(0.0))
+	evtMgr.Schedule(rtnCxt, rtnMsg, rtnFunc, vrtime.SecondsToTime(0.0))
 	if np.returnTo[connectID].count == 0 {
 		delete(np.returnTo, connectID)
 		delete(np.lossRtn, connectID)
 	}
+}
+
+type RtnMsgStruct struct {
+	Latency float64
+	Bndwdth float64
+	PrLoss  float64
+	Msg		any
 }
 
 // Arrive is called at the point an application message is received by the network
@@ -408,6 +423,7 @@ type topoDev interface {
 	devDelay(any) float64         // every device can be be queried for the delay it introduces for an operation
 	devState() any                // every device as a structure of state that can be accessed
 	devRng() *rngstream.RngStream // every device has its own RNG stream
+	devDrop() bool                // whether device will drop a packet
 	devAddActive(*networkMsg)     // add the connectID argument to the device's list of active connections
 	devRmActive(int)              // remove the connectID argument to the device's list of active connections
 	LogNetEvent(vrtime.Time, int, int, string, bool, float64)
@@ -443,6 +459,7 @@ type intrfcStruct struct {
 type intrfcState struct {
 	bndwdth     float64         // maximum bandwidth (in Mbytes/sec)
 	bufferSize  float64         // buffer capacity (in Mbytes)
+	load        float64         // sum of rates passing through
 	latency     float64         // time the leading bit takes to traverse the wire out of the interface
 	delay       float64         // time the leading bit takes to traverse the interface
 	empties     float64         // time when another packet can enter the egress side of the interface
@@ -536,7 +553,9 @@ func (intrfc *intrfcStruct) matchParam(attrbName, attrbValue string) bool {
 		return slices.Contains(intrfc.groups, attrbValue)
 	case "media":
 		return netMediaFromStr(attrbValue) == intrfc.media
-	case "device":
+	case "devtype":
+		return devCodeToStr(intrfc.device.devType()) == attrbValue
+	case "devname":
 		return intrfc.device.devName() == attrbValue
 	}
 
@@ -557,8 +576,11 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 		// units of delay are seconds
 		intrfc.state.delay = value.floatValue
 	case "bandwidth":
-		// units of bandwidth are Mbytes/sec
+		// units of bandwidth are Mbits/sec
 		intrfc.state.bndwdth = value.floatValue
+	case "buffer":
+		// units of buffer are Mbytes
+		intrfc.state.bufferSize = value.floatValue
 	case "MTU":
 		// number of bytes in maximally sized packet
 		intrfc.state.mtu = value.intValue
@@ -637,10 +659,12 @@ type networkState struct {
 	bndwdth  float64 // maximum bandwidth between any two routers in network
 	capacity float64 // maximum traffic capacity of network
 	trace    bool    // switch for calling trace saving
+	drop     bool    // switch for dropping packets with random sampling
 	rngstrm  *rngstream.RngStream
 	active   map[int]float64 // keep track of connections through the network
 	load     float64         // real-time value of total load (in units of Mbytes/sec)
 	packets  int             // number of packets actively passing in network
+	
 }
 
 // initNetworkStruct transforms information from the desc description
@@ -709,6 +733,7 @@ func createNetworkState(name string) *networkState {
 	ns.active = make(map[int]float64)
 	ns.load = 0.0
 	ns.packets = 0
+	ns.drop = false
 	ns.active = make(map[int]float64)
 	ns.rngstrm = rngstream.New(name)
 	return ns
@@ -759,10 +784,10 @@ func (ns *networkStruct) setParam(paramType string, value valueStruct) {
 		ns.netState.latency = fltValue
 	case "bandwidth":
 		ns.netState.bndwdth = fltValue
-	case "capacity":
-		ns.netState.capacity = fltValue
 	case "trace":
 		ns.netState.trace = value.boolValue
+	case "drop":
+		ns.netState.drop = value.boolValue
 	}
 }
 
@@ -966,6 +991,10 @@ func (endpt *endptDev) devDelay(arg any) float64 {
 	return 0.0
 }
 
+func (endpt *endptDev) devDrop() bool {
+	return false
+}
+
 // The switchDev struct holds information describing a run-time representation of a switch
 type switchDev struct {
 	switchName    string          // unique name
@@ -980,8 +1009,11 @@ type switchDev struct {
 type switchState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace   bool                 // switch for calling trace saving
+	drop    bool                 // switch to allow dropping packets
 	active  map[int]float64
 	load    float64
+	bufferSize  float64
+	capacity float64
 	packets int
 }
 
@@ -1004,6 +1036,7 @@ func createSwitchState(name string) *switchState {
 	ss.load = 0.0
 	ss.packets = 0
 	ss.trace = false
+	ss.drop = false
 	ss.rngstrm = rngstream.New(name)
 	return ss
 }
@@ -1033,8 +1066,12 @@ func (swtch *switchDev) setParam(param string, value valueStruct) {
 	switch param {
 	case "model":
 		swtch.switchModel = value.stringValue
+	case "buffer":
+		swtch.switchState.bufferSize = value.floatValue
 	case "trace":
 		swtch.switchState.trace = value.boolValue
+	case "drop":
+		swtch.switchState.drop = value.boolValue
 	}
 }
 
@@ -1088,12 +1125,17 @@ func (swtch *switchDev) devRmActive(connectID int) {
 	delete(swtch.switchState.active, connectID)
 }
 
-// devDelay returns the state-dependend delay for passage through the switch, as part of the topoDev interface.
+// devDelay returns the state-dependent delay for passage through the switch, as part of the topoDev interface.
 func (swtch *switchDev) devDelay(msg any) float64 {
 	delay := passThruDelay(swtch, msg)
 	// N.B. we could put load-dependent scaling factor here
 	return delay
 }
+
+func (swtch *switchDev) devDrop() bool {
+	return false
+}
+
 
 // LogNetEvent satisfies topoDev interface
 func (swtch *switchDev) LogNetEvent(time vrtime.Time, execID int, connectID int, op string, isPckt bool, rate float64) {
@@ -1117,8 +1159,10 @@ type routerDev struct {
 type routerState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace   bool                 // switch for calling trace saving
+	drop    bool				 // switch to allow dropping packets
 	active  map[int]float64
 	load    float64
+	buffer  float64
 	packets int
 }
 
@@ -1138,8 +1182,10 @@ func createRouterState(name string) *routerState {
 	rs := new(routerState)
 	rs.active = make(map[int]float64)
 	rs.load = 0.0
+	rs.buffer = math.MaxFloat64/2.0
 	rs.packets = 0
 	rs.trace = false
+	rs.drop = false
 	rs.rngstrm = rngstream.New(name)
 	return rs
 }
@@ -1169,6 +1215,8 @@ func (router *routerDev) setParam(param string, value valueStruct) {
 	switch param {
 	case "model":
 		router.routerModel = value.stringValue
+	case "buffer":
+		router.routerState.buffer = value.floatValue
 	case "trace":
 		router.routerState.trace = value.boolValue
 	}
@@ -1239,6 +1287,11 @@ func (router *routerDev) devDelay(msg any) float64 {
 	return delay
 }
 
+func (router *routerDev) devDrop() bool {
+	return false
+}
+
+
 // The intrfcsToDev struct describes a connection to a device.  Used in route descriptions
 type intrfcsToDev struct {
 	srcIntrfcID int // id of the interface where the connection starts
@@ -1258,6 +1311,8 @@ type networkMsg struct {
 	execID     int             // execution id given by app at entry
 	netMsgType networkMsgType  // enum type packet, srtFlow, endFlow, flowRate
 	rate       float64         // effective bandwidth for message
+	startTime  float64
+	prArrvl    float64         // probablity of arrival
 	msgLen     int             // length of the entire message, in Mbytes
 	msg        any             // message being carried.
 }
@@ -1414,7 +1469,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		connectID := np.Arrive(rtnCxt, rtnFunc, lossCxt, lossFunc)
 
 		// data structure that describes the message, noting that the 'edge' is the last bit
-		nm := networkMsg{stepIdx: len(*route) - 1, route: route, rate: bndwdth, msgLen: msgLen,
+		nm := networkMsg{stepIdx: len(*route) - 1, route: route, rate: bndwdth, prArrvl: 1.0, msgLen: msgLen,
 			netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
 
 		// The destination interface of the last routing step is where the message ultimately emerges from the network.
@@ -1434,7 +1489,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	// No quick network simulation, so make a message wrapper and push the message at the entry
 	// of the endpt's egress interface
 
-	nm := networkMsg{stepIdx: 0, route: route, rate: bndwdth, msgLen: msgLen,
+	nm := networkMsg{stepIdx: 0, route: route, rate: bndwdth, prArrvl: 1.0, msgLen: msgLen,
 		netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
 
 	// get identity of egress interface
@@ -1532,6 +1587,46 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	return nil
 }
 
+func estMM1NFull(u float64, N int) float64 {
+	prFull := 1.0 / float64(N + 1)
+	if math.Abs(1.0-u) < 1e-3 {
+		prFull = (1 - u) * math.Pow(u, float64(N)) / (1 - math.Pow(u, float64(N+1)))
+	}
+	return prFull
+}
+
+func estPrDrop(load, capacity float64, msgLen int, delay, rate float64) float64 {
+	// compute the ratio of arrival to service rate 
+	u := load / capacity
+
+	// estimate number of packets that can be served as the
+	// number that can be present over the latency time,
+	// given the rate and message length.
+	//
+	// in Mbits a packet is 8 * msgLen bytes / (1e+6 bits/Mbbit) = (8*m/1e+6) Mbits 
+	// 
+	// with a bandwidth of rate Mbits/sec, the rate in pckts/sec is
+	//
+	//        Mbits
+	//   rate ------
+	//         sec                      rate     pckts
+	//  -----------------------  =     ------    ----
+	//                 Mbits         (8*m/1e+6)   sec
+	//    (8*m/1e+6)  ------
+	//                  pckt 
+	//				   
+	// The number of packets that can be injected at this rate in a period of L secs is
+	//
+	//  L * rate
+	//  -------- pckts
+	//  (8*m/1e+6)
+	//
+	m := float64(msgLen*8) / 1e+6
+	N := int(math.Round(delay*rate*1e+6/m))
+
+	return estMM1NFull(u, N)
+}
+
 // exitEgressIntrfc implements an event handler for the departure of a message from an interface.
 // It determines the time-through-network of the message and schedules the arrival
 // of the message at the ingress interface
@@ -1575,27 +1670,8 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	// for a packet crossing a network, sample the probability of a successful transition and
 	// potentially drop the message
 	if isPckt && (intrfc.cable == nil || intrfc.media != wired) {
-		// compute the ratio of arrival to service rate at the network
-		// FIND
-		a := net.netState.load / net.netState.capacity
-
-		// estimate number of packets that can be served by
-		//    sec           1            pckts
-		//   ------ x -------------- x ----------
-		//   Mbytes	   latency (sec)     Mbyte
-		//
-		msgLen := float64(nm.msgLen*8) / 1e+6
-		N := (1.0 / rate) / (netDelay * msgLen)
-
-		// probability of being in state where a M/M/1/N queue is full
-		//
-		//  P_N = (1-a)a^N / (1-a^{N+1}) if a < 1
-		//      = 1/(N+1) if a == 1
-
-		prDrop := 1.0 / (N + 1)
-		if math.Abs(1.0-a) < 1e-3 {
-			prDrop = (1 - a) * math.Pow(a, N) / (1 - math.Pow(a, N+1))
-		}
+		prDrop := estPrDrop(net.netState.load, net.netState.capacity, nm.msgLen, netDelay,rate )
+		nm.prArrvl *= (1.0-prDrop)
 
 		// sample a uniform 0,1, if less than prDrop then drop the packet
 		if intrfc.device.devRng().RandU01() < prDrop {
@@ -1628,12 +1704,24 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	// cast data argument to network message
 	nm := msg.(networkMsg)
 	isPckt := nm.carriesPckt()
+	netDevType := intrfc.device.devType()
 
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 
+	// estimate the probability of dropping the packet
+	if netDevType == routerCode || netDevType == switchCode {
+		nxtIntrfc := intrfcByID[(*nm.route)[nm.stepIdx+1].srcIntrfcID]
+		load   := nxtIntrfc.state.load
+		capacity := nxtIntrfc.state.bndwdth	
+		buffer := nxtIntrfc.state.bufferSize         // buffer size in Mbytes
+		N := int(math.Round(buffer*1e+6/float64(nm.msgLen)))   // buffer length in Mbytes
+		prDrop := estMM1NFull(load/capacity, N)
+		nm.prArrvl *= (1.0-prDrop)
+	}
+
 	// if the arrival is a packet look for congestion and drop the packet
-	if isPckt && intrfc.congested(true) {
+	if intrfc.device.devDrop() && isPckt && intrfc.congested(true) {
 		activePortal.lostConnection(evtMgr, &nm, nm.connectID)
 		return nil
 	}
