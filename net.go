@@ -69,6 +69,13 @@ type NetworkPortal struct {
 // (there should be only one call to CreateNetworkPortal...)
 var activePortal *NetworkPortal
 
+type activeRec struct {
+	number int
+	rate float64
+}
+
+
+
 // CreateNetworkPortal is a constructor, passed a flag indicating which
 // of two network simulation modes to use, passes a flag indicating whether
 // packets should be passed whole, and writes the NetworkPortal pointer into a global variable
@@ -581,7 +588,8 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 		intrfc.state.bufferSize = value.floatValue
 	case "load":
 		// units of buffer are Mbytes
-		intrfc.state.bufferSize = value.floatValue
+		intrfc.state.ingressLoad = value.floatValue
+		intrfc.state.egressLoad = value.floatValue
 	case "MTU":
 		// number of bytes in maximally sized packet
 		intrfc.state.mtu = value.intValue
@@ -636,6 +644,7 @@ func linkIntrfcStruct(intrfcDesc *IntrfcDesc) {
 // availBndwdth returns the interface bandwidth available to a new connection
 func (intrfc *intrfcStruct) availBndwdth(ingress bool) float64 {
 
+	// N.B. is difference between ingress and egress loads important?
 	if ingress {
 		return math.Max(intrfc.state.bndwdth-intrfc.state.ingressLoad, 0.0)
 	} else {
@@ -668,11 +677,49 @@ type networkState struct {
 	trace    bool    // switch for calling trace saving
 	drop     bool    // switch for dropping packets with random sampling
 	rngstrm  *rngstream.RngStream
-	active   map[int]float64 // keep track of connections through the network
-	load     float64         // real-time value of total load (in units of Mbytes/sec)
-	packets  int             // number of packets actively passing in network
+	flows    map[int]activeRec // keep track of connections through the network
+	load     float64           // real-time value of total load (in units of Mbytes/sec)
+	packets  int               // number of packets actively passing in network
 	
 }
+
+func (ns *networkStruct) addFlow(execId int, rate float64) {
+	_, present := ns.netState.flows[execId]
+	if !present {
+		ns.netState.flows[execId] = activeRec{number:0, rate:0.0}
+	}
+	ar := ns.netState.flows[execId]
+	ar.number += 1
+	ar.rate += rate
+	ns.netState.flows[execId] = ar
+	ns.netState.load += rate
+	return
+}
+
+func (ns *networkStruct) rmFlow(execId int, rate float64) {
+	_, present := ns.netState.flows[execId]
+	if !present {
+		panic(fmt.Errorf("tried to remove non-existant flow instance from network"))
+	}
+	ar := ns.netState.flows[execId]
+	ar.number -= 1
+	ar.rate -= rate
+	ns.netState.flows[execId] = ar
+	if ns.netState.flows[execId].number == 0 {
+		delete(ns.netState.flows, execId)
+	}
+	ns.netState.load -= rate
+}
+ 
+func (ns *networkStruct) chgFlow(execId int, delta float64) {
+	_, present := ns.netState.flows[execId]
+	if !present {
+		panic(fmt.Errorf("tried to remove non-existant flow instance from network"))
+	}
+	ar := ns.netState.flows[execId]
+	ar.rate += delta
+	ns.netState.flows[execId] = ar
+} 
 
 // initNetworkStruct transforms information from the desc description
 // of a network to its networkStruct representation.  This is separated from
@@ -737,11 +784,10 @@ func createNetworkStruct(nd *NetworkDesc) *networkStruct {
 // createNetworkState constructs the data for a networkState struct
 func createNetworkState(name string) *networkState {
 	ns := new(networkState)
-	ns.active = make(map[int]float64)
+	ns.flows = make(map[int]activeRec)
 	ns.load = 0.0
 	ns.packets = 0
 	ns.drop = false
-	ns.active = make(map[int]float64)
 	ns.rngstrm = rngstream.New(name)
 	return ns
 }
@@ -1558,7 +1604,7 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 
 	// remove the connection from the device
 	thisDev := intrfc.device
-	thisDev.devRmActive(nm.connectID)
+	thisDev.devRmActive(nm.execID)
 
 	nowInSecs := evtMgr.CurrentSeconds()
 	nowInVTime := evtMgr.CurrentTime()
@@ -1576,7 +1622,10 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 		// compute passage time based on bandwidth and message size
 		msgLen := float64(nm.msgLen*8) / 1e+6
 
-		delay = msgLen / intrfc.availBndwdth(false)
+		availbw := intrfc.availBndwdth(false)
+		nm.rate = math.Max(nm.rate, availbw)
+
+		delay = msgLen / availbw
 
 		// remember when this packet clears the buffer.  Assumes FCFS queuing
 		intrfc.state.empties = enterIntrfcTime + delay
@@ -1647,13 +1696,11 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 		rate = math.Min(rate, nm.rate)
 	}
 
-	// mark the rate at which the message is traveling
-	nm.rate = rate
-
 	// logic associated with flows
 	if nm.netMsgType == srtFlow {
-		net.netState.active[nm.execID] = nm.rate
-		net.netState.load += nm.rate
+		// include the flow in the network about to be entered.
+		// Question, does that matter when the connection is wired?
+		net.addFlow(nm.execID, nm.rate)
 	} else if nm.netMsgType == endFlow {
 		// remove connection from those active on the interface
 		_, present := intrfc.state.active[nm.execID]
@@ -1662,11 +1709,15 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 		}
 	} else if nm.netMsgType == flowRate {
 		// a rateFlow message has entered before, but now the rate changes.
+
 		// recover the old rate, subtract off from active and from load, and put in the new rate
-		oldRate := net.netState.active[nm.execID]
-		net.netState.active[nm.execID] = nm.rate
-		net.netState.load += (nm.rate - oldRate)
+		oldRate := intrfc.state.active[nm.execID]
+		net.chgFlow(nm.execID, nm.rate - oldRate)
+		intrfc.state.egressLoad -= (nm.rate - oldRate) 	
 	}
+
+	// mark the rate at which the message is traveling
+	nm.rate = rate
 
 	// for a packet crossing a network, sample the probability of a successful transition and
 	// potentially drop the message
@@ -1677,7 +1728,7 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 		// sample a uniform 0,1, if less than prDrop then drop the packet
 		if net.pcktDrop() && (intrfc.device.devRng().RandU01() < prDrop) {
 			// dropping packet
-			// we know the route and so could back trace as needed
+			// there is some logic for dealing with packet loss	
 			return nil
 		}
 	}
@@ -1709,10 +1760,10 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 
-	// estimate the probability of dropping the packet
-	if netDevType == routerCode || netDevType == switchCode {
+	// estimate the probability of dropping the packet on the way out
+	if isPckt && (netDevType == routerCode || netDevType == switchCode) {
 		nxtIntrfc := intrfcByID[(*nm.route)[nm.stepIdx+1].srcIntrfcID]
-		load   := nxtIntrfc.state.load
+		load     := nxtIntrfc.state.egressLoad
 		capacity := nxtIntrfc.state.bndwdth	
 		buffer := nxtIntrfc.state.bufferSize         // buffer size in Mbytes
 		N := int(math.Round(buffer*1e+6/float64(nm.msgLen)))   // buffer length in Mbytes
@@ -1737,11 +1788,8 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 
 	// reduce load on network just left
 	if nm.netMsgType == endFlow && intrfc.faces != nil {
-		rate, present := intrfc.faces.netState.active[nm.execID]
-		if present {
-			intrfc.faces.netState.load -= rate
-			delete(intrfc.faces.netState.active, nm.execID)
-		}
+		intrfc.faces.rmFlow(nm.execID, nm.rate)
+		delete(intrfc.state.active, nm.execID)
 	} else if isPckt && intrfc.faces != nil {
 		intrfc.faces.netState.packets -= 1
 	}
@@ -1776,7 +1824,7 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 	} else if nm.netMsgType == endFlow {
 		// if the 'end' flag is set remove the flow rate from the interface
 		intrfc.state.ingressLoad -= intrfc.state.active[nm.execID]
-		delete(intrfc.state.active, nm.connectID)
+		delete(intrfc.state.active, nm.execID)
 	}
 
 	// log entry of packet into device
