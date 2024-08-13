@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path"
+	"strings"
 )
 
 // a rtnRecord saves the event handling function to call when the network simulation
@@ -542,6 +543,49 @@ func (intrfc *intrfcStruct) congested(ingress bool) bool {
 		load = intrfc.state.egressLoad
 	}
 	return math.Abs(load-intrfc.state.bndwdth) < 1e-3
+}
+
+type shortIntrfc struct {
+	devName string
+	faces string
+	ingressLoad float64
+	egressLoad float64
+	execID int
+	netMsgType networkMsgType
+	rate float64
+	prArrvl float64
+	time float64
+}
+
+func (sis *shortIntrfc) Serialize() string {
+	var bytes []byte
+	var merr error
+
+	bytes, merr = yaml.Marshal(*sis)
+
+	if merr != nil {
+		panic(merr)
+	}
+	return string(bytes[:])
+}
+
+
+func (intrfc *intrfcStruct) addTrace(label string, nm *networkMsg, t float64) {
+	if !intrfc.state.trace {
+		return
+	}
+	si := new(shortIntrfc)
+	si.devName = intrfc.device.devName()
+	si.faces = intrfc.faces.name
+	si.ingressLoad = intrfc.state.ingressLoad
+	si.egressLoad = intrfc.state.egressLoad
+	si.execID = nm.execID
+	si.netMsgType = nm.netMsgType	
+	si.rate = nm.rate
+	si.prArrvl = nm.prArrvl
+	siStr := si.Serialize()
+	siStr = strings.Replace(siStr,"\n"," ",-1)
+	fmt.Println(label, siStr)
 }
 
 // matchParam is used to determine whether a run-time parameter description
@@ -1516,7 +1560,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		connectID := np.Arrive(rtnCxt, rtnFunc, lossCxt, lossFunc)
 
 		// data structure that describes the message, noting that the 'edge' is the last bit
-		nm := networkMsg{stepIdx: len(*route) - 1, route: route, rate: bndwdth, prArrvl: 1.0, msgLen: msgLen,
+		nm := networkMsg{stepIdx: len(*route) - 1, route: route, rate: rate, prArrvl: 1.0, msgLen: msgLen,
 			netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
 
 		// The destination interface of the last routing step is where the message ultimately emerges from the network.
@@ -1536,8 +1580,8 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	// No quick network simulation, so make a message wrapper and push the message at the entry
 	// of the endpt's egress interface
 
-	nm := networkMsg{stepIdx: 0, route: route, rate: bndwdth, prArrvl: 1.0, msgLen: msgLen,
-	netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
+	nm := networkMsg{stepIdx: 0, route: route, rate: rate, prArrvl: 1.0, msgLen: msgLen,
+		netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
 
 	// get identity of egress interface
 	intrfc := intrfcByID[(*route)[0].srcIntrfcID]
@@ -1609,6 +1653,8 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	nowInSecs := evtMgr.CurrentSeconds()
 	nowInVTime := evtMgr.CurrentTime()
 	var delay float64
+
+	intrfc.addTrace("enterEgressIntrfc", &nm, nowInSecs)
 
 	// if this is a flow, mark that this connection is passing through the interface
 	if !(nm.netMsgType == packet) {
@@ -1688,6 +1734,8 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
 
+	intrfc.addTrace("exitEgressIntrfc", &nm, evtMgr.CurrentSeconds())
+
 	// transitDelay will differentiate between point-to-point wired connection and passage through a network
 	netDelay, net := transitDelay(&nm)
 
@@ -1760,6 +1808,8 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 
+	intrfc.addTrace("enterIngressIntrfc", &nm, evtMgr.CurrentSeconds())
+
 	// estimate the probability of dropping the packet on the way out
 	if isPckt && (netDevType == routerCode || netDevType == switchCode) {
 		nxtIntrfc := intrfcByID[(*nm.route)[nm.stepIdx+1].srcIntrfcID]
@@ -1817,6 +1867,8 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 
 	// log passage of msg through the interface
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
+
+	intrfc.addTrace("exitIngressIntrfc", &nm, evtMgr.CurrentSeconds())
 
 	if isPckt {
 		// take the connection off the interface active list
