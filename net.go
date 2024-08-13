@@ -63,7 +63,6 @@ type NetworkPortal struct {
 	QkNetSim    bool
 	returnTo    map[int]*rtnRecord
 	lossRtn     map[int]*rtnRecord
-	activeEntry map[intPair]bool
 }
 
 // activePortal remembers the most recent NetworkPortal created
@@ -84,7 +83,6 @@ func CreateNetworkPortal() *NetworkPortal {
 	np.QkNetSim = true
 	np.returnTo = make(map[int]*rtnRecord)
 	np.lossRtn = make(map[int]*rtnRecord)
-	np.activeEntry = make(map[intPair]bool)
 	activePortal = np
 
 	return np
@@ -423,7 +421,6 @@ type topoDev interface {
 	devDelay(any) float64         // every device can be be queried for the delay it introduces for an operation
 	devState() any                // every device as a structure of state that can be accessed
 	devRng() *rngstream.RngStream // every device has its own RNG stream
-	devDrop() bool                // whether device will drop a packet
 	devAddActive(*networkMsg)     // add the connectID argument to the device's list of active connections
 	devRmActive(int)              // remove the connectID argument to the device's list of active connections
 	LogNetEvent(vrtime.Time, int, int, string, bool, float64)
@@ -465,6 +462,7 @@ type intrfcState struct {
 	empties     float64         // time when another packet can enter the egress side of the interface
 	mtu         int             // maximum packet size (bytes)
 	trace       bool            // switch for calling add trace
+	drop		bool			// whether to permit packet drops
 	active      map[int]float64 // id of a connection actively passing through the interface, and its bandwidth
 	ingressLoad float64
 	egressLoad  float64
@@ -581,11 +579,16 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 	case "buffer":
 		// units of buffer are Mbytes
 		intrfc.state.bufferSize = value.floatValue
+	case "load":
+		// units of buffer are Mbytes
+		intrfc.state.bufferSize = value.floatValue
 	case "MTU":
 		// number of bytes in maximally sized packet
 		intrfc.state.mtu = value.intValue
 	case "trace":
 		intrfc.state.trace = value.boolValue
+	case "drop":
+		intrfc.state.drop = value.boolValue
 	}
 }
 
@@ -638,6 +641,10 @@ func (intrfc *intrfcStruct) availBndwdth(ingress bool) float64 {
 	} else {
 		return math.Max(intrfc.state.bndwdth-intrfc.state.egressLoad, 0.0)
 	}
+}
+
+func (intrfc *intrfcStruct) pcktDrop() bool {
+	return intrfc.state.drop
 }
 
 // A networkStruct holds the attributes of one of the model's communication subnetworks
@@ -786,6 +793,8 @@ func (ns *networkStruct) setParam(paramType string, value valueStruct) {
 		ns.netState.bndwdth = fltValue
 	case "capacity":
 		ns.netState.capacity = fltValue
+	case "load":
+		ns.netState.load = fltValue
 	case "trace":
 		ns.netState.trace = value.boolValue
 	case "drop":
@@ -843,6 +852,10 @@ func (ns *networkStruct) availBndwdth() float64 {
 	return math.Max(ns.netState.bndwdth-ns.netState.load, 0.0)
 }
 
+func (ns *networkStruct) pcktDrop() bool {
+	return ns.netState.drop
+}	
+
 // a endptDev holds information about a endpt
 type endptDev struct {
 	endptName    string   // unique name
@@ -860,6 +873,7 @@ type endptDev struct {
 type endptState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace   bool                 // switch for calling add trace
+	drop	bool				 // whether to support packet drops at interface
 	active  map[int]float64
 	load    float64
 	packets int
@@ -993,9 +1007,6 @@ func (endpt *endptDev) devDelay(arg any) float64 {
 	return 0.0
 }
 
-func (endpt *endptDev) devDrop() bool {
-	return false
-}
 
 // The switchDev struct holds information describing a run-time representation of a switch
 type switchDev struct {
@@ -1133,11 +1144,6 @@ func (swtch *switchDev) devDelay(msg any) float64 {
 	// N.B. we could put load-dependent scaling factor here
 	return delay
 }
-
-func (swtch *switchDev) devDrop() bool {
-	return false
-}
-
 
 // LogNetEvent satisfies topoDev interface
 func (swtch *switchDev) LogNetEvent(time vrtime.Time, execID int, connectID int, op string, isPckt bool, rate float64) {
@@ -1289,11 +1295,6 @@ func (router *routerDev) devDelay(msg any) float64 {
 	return delay
 }
 
-func (router *routerDev) devDrop() bool {
-	return false
-}
-
-
 // The intrfcsToDev struct describes a connection to a device.  Used in route descriptions
 type intrfcsToDev struct {
 	srcIntrfcID int // id of the interface where the connection starts
@@ -1419,7 +1420,7 @@ func transitDelay(nm *networkMsg) (float64, *networkStruct) {
 // schedules their arrival to the egress interface of the message source endpt
 // func enterNetwork(evtMgr *evtm.EventManager, cpf cmpPtnFunc, cpm *cmpPtnMsg) any {
 func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev string, msgLen int,
-	execID int, isPckt bool, rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction,
+	execID int, isPckt bool, flowState string, rate float64, msg any, rtnCxt any, rtnFunc evtm.EventHandlerFunction,
 	lossCxt any, lossFunc evtm.EventHandlerFunction) any {
 
 	if rtnCxt == nil {
@@ -1445,17 +1446,15 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	}
 
 	nMsgType := packet
+
+	// determine whether this is a srtFlow, endFlow, or rate type flow message
 	if !isPckt {
-		ip := intPair{i: srcID, j: execID}
-		_, present := np.activeEntry[ip]
-		if !present {
+		if flowState == "srt" {
 			nMsgType = srtFlow
-			np.activeEntry[ip] = true
-		} else if present && rate > 0.0 {
-			nMsgType = flowRate
-		} else {
+		} else if flowState == "end" {
 			nMsgType = endFlow
-			delete(np.activeEntry, ip)
+		} else if flowState == "chg" {
+			nMsgType = flowRate
 		}
 	}
 
@@ -1492,7 +1491,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	// of the endpt's egress interface
 
 	nm := networkMsg{stepIdx: 0, route: route, rate: bndwdth, prArrvl: 1.0, msgLen: msgLen,
-		netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
+	netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
 
 	// get identity of egress interface
 	intrfc := intrfcByID[(*route)[0].srcIntrfcID]
@@ -1566,8 +1565,8 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	var delay float64
 
 	// if this is a flow, mark that this connection is passing through the interface
-	if !nm.carriesPckt() {
-		intrfc.state.active[nm.connectID] = nm.rate
+	if !(nm.netMsgType == packet) {
+		intrfc.state.active[nm.execID] = nm.rate
 		intrfc.LogNetEvent(nowInVTime, nm.execID, nm.connectID, "enter", false, nm.rate)
 		thisDev.LogNetEvent(nowInVTime, nm.execID, nm.connectID, "exit", false, nm.rate)
 	} else {
@@ -1635,7 +1634,7 @@ func estPrDrop(load, capacity float64, msgLen int, delay, rate float64) float64 
 func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any {
 	intrfc := egressIntrfc.(*intrfcStruct)
 	nm := msg.(networkMsg)
-	isPckt := nm.carriesPckt()
+	isPckt := (nm.netMsgType == packet)
 
 	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
@@ -1653,19 +1652,19 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 
 	// logic associated with flows
 	if nm.netMsgType == srtFlow {
-		net.netState.active[nm.connectID] = nm.rate
+		net.netState.active[nm.execID] = nm.rate
 		net.netState.load += nm.rate
 	} else if nm.netMsgType == endFlow {
 		// remove connection from those active on the interface
-		_, present := intrfc.state.active[nm.connectID]
+		_, present := intrfc.state.active[nm.execID]
 		if present {
-			delete(intrfc.state.active, nm.connectID)
+			delete(intrfc.state.active, nm.execID)
 		}
 	} else if nm.netMsgType == flowRate {
 		// a rateFlow message has entered before, but now the rate changes.
 		// recover the old rate, subtract off from active and from load, and put in the new rate
-		oldRate := net.netState.active[nm.connectID]
-		net.netState.active[nm.connectID] = nm.rate
+		oldRate := net.netState.active[nm.execID]
+		net.netState.active[nm.execID] = nm.rate
 		net.netState.load += (nm.rate - oldRate)
 	}
 
@@ -1676,10 +1675,9 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 		nm.prArrvl *= (1.0-prDrop)
 
 		// sample a uniform 0,1, if less than prDrop then drop the packet
-		if intrfc.device.devRng().RandU01() < prDrop {
+		if net.pcktDrop() && (intrfc.device.devRng().RandU01() < prDrop) {
 			// dropping packet
 			// we know the route and so could back trace as needed
-
 			return nil
 		}
 	}
@@ -1705,7 +1703,7 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 
 	// cast data argument to network message
 	nm := msg.(networkMsg)
-	isPckt := nm.carriesPckt()
+	isPckt := (nm.netMsgType == packet)
 	netDevType := intrfc.device.devType()
 
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
@@ -1723,15 +1721,15 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	}
 
 	// if the arrival is a packet look for congestion and drop the packet
-	if intrfc.device.devDrop() && isPckt && intrfc.congested(true) {
+	if intrfc.pcktDrop() && isPckt && intrfc.congested(true) {
 		activePortal.lostConnection(evtMgr, &nm, nm.connectID)
 		return nil
 	}
 
 	if !isPckt {
 		//  mark that connection is occupying interface
-		oldRate := intrfc.state.active[nm.connectID] // notice that return is 0.0 if index not present
-		intrfc.state.active[nm.connectID] = nm.rate
+		oldRate := intrfc.state.active[nm.execID] // notice that return is 0.0 if index not present
+		intrfc.state.active[nm.execID] = nm.rate
 		intrfc.state.ingressLoad += (nm.rate - oldRate)
 	} else {
 		intrfc.state.packets += 1
@@ -1739,10 +1737,10 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 
 	// reduce load on network just left
 	if nm.netMsgType == endFlow && intrfc.faces != nil {
-		rate, present := intrfc.faces.netState.active[nm.connectID]
+		rate, present := intrfc.faces.netState.active[nm.execID]
 		if present {
 			intrfc.faces.netState.load -= rate
-			delete(intrfc.faces.netState.active, nm.connectID)
+			delete(intrfc.faces.netState.active, nm.execID)
 		}
 	} else if isPckt && intrfc.faces != nil {
 		intrfc.faces.netState.packets -= 1
@@ -1767,7 +1765,7 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 	intrfc := ingressIntrfc.(*intrfcStruct)
 	nm := msg.(networkMsg)
 
-	isPckt := nm.carriesPckt()
+	isPckt := (nm.netMsgType == packet)
 
 	// log passage of msg through the interface
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "exit", isPckt, nm.rate)
@@ -1777,7 +1775,7 @@ func exitIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) an
 		intrfc.state.packets -= 1
 	} else if nm.netMsgType == endFlow {
 		// if the 'end' flag is set remove the flow rate from the interface
-		intrfc.state.ingressLoad -= intrfc.state.active[nm.connectID]
+		intrfc.state.ingressLoad -= intrfc.state.active[nm.execID]
 		delete(intrfc.state.active, nm.connectID)
 	}
 
