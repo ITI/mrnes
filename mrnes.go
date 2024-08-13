@@ -120,15 +120,6 @@ func BuildExperimentNet(syn map[string]string, useYAML bool, idCounter int, trac
 	checkConnections(topoGraph)
 }
 
-// A valueStruct type holds three different types a value might have,
-// typically only one of these is used, and which one is known by context
-type valueStruct struct {
-	intValue    int
-	floatValue  float64
-	stringValue string
-	boolValue   bool
-}
-
 // reorderExpParams is used to put the ExpParameter parameters in
 // an order such that the earlier elements in the order have broader
 // range of attributes than later ones that apply to the same configuration element.

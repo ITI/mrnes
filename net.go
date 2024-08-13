@@ -545,19 +545,19 @@ func (intrfc *intrfcStruct) congested(ingress bool) bool {
 	return math.Abs(load-intrfc.state.bndwdth) < 1e-3
 }
 
-type shortIntrfc struct {
-	devName string
-	faces string
-	ingressLoad float64
-	egressLoad float64
-	execID int
-	netMsgType networkMsgType
-	rate float64
-	prArrvl float64
-	time float64
+type ShortIntrfc struct {
+	DevName string
+	Faces string
+	IngressLoad float64
+	EgressLoad float64
+	ExecID int
+	NetMsgType networkMsgType
+	Rate float64
+	PrArrvl float64
+	Time float64
 }
 
-func (sis *shortIntrfc) Serialize() string {
+func (sis *ShortIntrfc) Serialize() string {
 	var bytes []byte
 	var merr error
 
@@ -574,15 +574,15 @@ func (intrfc *intrfcStruct) addTrace(label string, nm *networkMsg, t float64) {
 	if !intrfc.state.trace {
 		return
 	}
-	si := new(shortIntrfc)
-	si.devName = intrfc.device.devName()
-	si.faces = intrfc.faces.name
-	si.ingressLoad = intrfc.state.ingressLoad
-	si.egressLoad = intrfc.state.egressLoad
-	si.execID = nm.execID
-	si.netMsgType = nm.netMsgType	
-	si.rate = nm.rate
-	si.prArrvl = nm.prArrvl
+	si := new(ShortIntrfc)
+	si.DevName = intrfc.device.devName()
+	si.Faces = intrfc.faces.name
+	si.IngressLoad = intrfc.state.ingressLoad
+	si.EgressLoad = intrfc.state.egressLoad
+	si.ExecID = nm.execID
+	si.NetMsgType = nm.netMsgType	
+	si.Rate = nm.rate
+	si.PrArrvl = nm.prArrvl
 	siStr := si.Serialize()
 	siStr = strings.Replace(siStr,"\n"," ",-1)
 	fmt.Println(label, siStr)

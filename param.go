@@ -14,6 +14,15 @@ type AttrbStruct struct {
 	AttrbName, AttrbValue string
 }
 
+// A valueStruct type holds three different types a value might have,
+// typically only one of these is used, and which one is known by context
+type valueStruct struct {
+    intValue    int
+    floatValue  float64
+    stringValue string
+    boolValue   bool
+}
+
 // CreateAttrbStruct is a constructor
 func CreateAttrbStruct(attrbName, attrbValue string) *AttrbStruct {
 	as := new(AttrbStruct)
