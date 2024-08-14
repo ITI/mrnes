@@ -1530,21 +1530,18 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	// get the latency and bandwidth for traffic on this path, computed 'now'
 	latency, bndwdth := routeTransitPerf(srcID, dstID, msg, route, true)
 
-	// if the incoming rate is greater than 0, include it in the path minimum
-	if !isPckt && rate > 0.0 {
-		bndwdth = math.Min(bndwdth, rate)
-	}
-
 	nMsgType := packet
 
 	// determine whether this is a srtFlow, endFlow, or rate type flow message
 	if !isPckt {
 		if flowState == "srt" {
 			nMsgType = srtFlow
+			bndwdth = math.Min(bndwdth, rate)
 		} else if flowState == "end" {
 			nMsgType = endFlow
 		} else if flowState == "chg" {
 			nMsgType = flowRate
+			bndwdth = math.Min(bndwdth, rate)
 		}
 	}
 
@@ -1560,7 +1557,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		connectID := np.Arrive(rtnCxt, rtnFunc, lossCxt, lossFunc)
 
 		// data structure that describes the message, noting that the 'edge' is the last bit
-		nm := networkMsg{stepIdx: len(*route) - 1, route: route, rate: rate, prArrvl: 1.0, msgLen: msgLen,
+		nm := networkMsg{stepIdx: len(*route) - 1, route: route, rate: bndwdth, prArrvl: 1.0, msgLen: msgLen,
 			netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
 
 		// The destination interface of the last routing step is where the message ultimately emerges from the network.
@@ -1580,7 +1577,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	// No quick network simulation, so make a message wrapper and push the message at the entry
 	// of the endpt's egress interface
 
-	nm := networkMsg{stepIdx: 0, route: route, rate: rate, prArrvl: 1.0, msgLen: msgLen,
+	nm := networkMsg{stepIdx: 0, route: route, rate: bndwdth, prArrvl: 1.0, msgLen: msgLen,
 		netMsgType: nMsgType, connectID: connectID, execID: execID, msg: msg}
 
 	// get identity of egress interface
@@ -1656,6 +1653,8 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 
 	intrfc.addTrace("enterEgressIntrfc", &nm, nowInSecs)
 
+	nm.rate = math.Min(nm.rate, intrfc.availBndwdth(false))
+
 	// if this is a flow, mark that this connection is passing through the interface
 	if !(nm.netMsgType == packet) {
 		intrfc.state.active[nm.execID] = nm.rate
@@ -1669,9 +1668,10 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 		msgLen := float64(nm.msgLen*8) / 1e+6
 
 		availbw := intrfc.availBndwdth(false)
-		nm.rate = math.Max(nm.rate, availbw)
-
-		delay = msgLen / availbw
+		delay = math.MaxFloat64/2.0
+		if availbw > 0.0 {
+			delay = msgLen / availbw
+		} 
 
 		// remember when this packet clears the buffer.  Assumes FCFS queuing
 		intrfc.state.empties = enterIntrfcTime + delay
@@ -1740,9 +1740,7 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	netDelay, net := transitDelay(&nm)
 
 	rate := net.availBndwdth()
-	if nm.rate > 0.0 {
-		rate = math.Min(rate, nm.rate)
-	}
+	nm.rate = math.Min(rate, nm.rate)
 
 	// logic associated with flows
 	if nm.netMsgType == srtFlow {
@@ -1764,13 +1762,10 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 		intrfc.state.egressLoad -= (nm.rate - oldRate) 	
 	}
 
-	// mark the rate at which the message is traveling
-	nm.rate = rate
-
 	// for a packet crossing a network, sample the probability of a successful transition and
 	// potentially drop the message
 	if isPckt && (intrfc.cable == nil || intrfc.media != wired) {
-		prDrop := estPrDrop(net.netState.load, net.netState.capacity, nm.msgLen, netDelay,rate )
+		prDrop := estPrDrop(net.netState.load, net.netState.capacity, nm.msgLen, netDelay, nm.rate)
 		nm.prArrvl *= (1.0-prDrop)
 
 		// sample a uniform 0,1, if less than prDrop then drop the packet
@@ -1804,6 +1799,8 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	nm := msg.(networkMsg)
 	isPckt := (nm.netMsgType == packet)
 	netDevType := intrfc.device.devType()
+
+	nm.rate = math.Min(nm.rate, intrfc.availBndwdth(true))
 
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
 	intrfc.prmDev.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, nm.rate)
