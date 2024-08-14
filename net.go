@@ -2010,9 +2010,14 @@ func routeTransitPerf(srcID, dstID int, msg any, route *[]intrfcsToDev, compute 
 		bndwdth = math.Min(bndwdth, srcIntrfc.availBndwdth(false))
 		bndwdth = math.Min(bndwdth, dstIntrfc.availBndwdth(true))
 		if srcIntrfc.carry != nil {
-			bndwdth = math.Min(bndwdth, net.availBndwdth())
+			delta := math.Min(bndwdth, net.availBndwdth())
+			bndwdth = delta
+		}
+		if bndwdth < 1.0 {
+			bndwdth += 0.0	
 		}
 	}
+
 	setCachedTransitPerf(srcID, dstID, latency, bndwdth)
 
 	return latency, bndwdth
