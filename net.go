@@ -1527,11 +1527,14 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		panic(fmt.Errorf("unable to find a route %s -> %s", srcDev, dstDev))
 	}
 
-	// get the latency and bandwidth for traffic on this path, computed 'now'
-	latency, bndwdth := routeTransitPerf(srcID, dstID, msg, route, true)
+	latency := float64(0.0)
+	bndwdth := rate
+	// if isPckt {
+			// get the latency and bandwidth for traffic on this path, computed 'now'
+	//		latency, bndwdth := routeTransitPerf(srcID, dstID, msg, route, true)
+	// } 
 
 	nMsgType := packet
-
 	// determine whether this is a srtFlow, endFlow, or rate type flow message
 	if !isPckt {
 		if flowState == "srt" {
