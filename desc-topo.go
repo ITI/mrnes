@@ -775,22 +775,28 @@ func DefaultRouterName() string {
 
 // CreateRouter is a constructor, stores (possibly creates default) name, initializes slice of interface frames
 func CreateRouter(name, model string) *RouterFrame {
-	rf := new(RouterFrame)
+	rtr := new(RouterFrame)
 	numberOfRouters += 1
 
-	rf.Model = model
+	rtr.Model = model
 
 	if len(name) == 0 {
 		name = DefaultRouterName()
 	}
 
-	rf.Name = name
+	rtr.Name = name
 	objTypeByName[name] = "Router"
-	devByName[name] = rf
-	rtrByName[name] = rf
-	rf.Interfaces = make([]*IntrfcFrame, 0)
-	rf.Groups = []string{}
-	return rf
+	devByName[name] = rtr
+	rtrByName[name] = rtr
+	rtr.Interfaces = make([]*IntrfcFrame, 0)
+	rtr.Groups = []string{}
+	return rtr
+}
+
+func CreateBrouter(name, model string) *RouterFrame {
+	brtr := CreateRouter(name, model)
+	brtr.AddGroup("Brouter")
+	return brtr
 }
 
 // RouterPresent returns a boolean flag indicating whether
@@ -914,6 +920,27 @@ func CreateSwitch(name, model string) *SwitchFrame {
 	return sf
 }
 
+// CreateHub constructs a switch frame tagged as being a hub
+func CreateHub(name, model string) *SwitchFrame {
+	hub := CreateSwitch(name, model)
+	hub.AddGroup("Hub")
+	return hub
+}
+
+// CreateHub constructs a switch frame tagged as being a hub
+func CreateBridge(name, model string) *SwitchFrame {
+	bridge := CreateSwitch(name, model)
+	bridge.AddGroup("Bridge")
+	return bridge
+}
+
+// CreateRepeater constructs a switch frame tagged as being a repeater
+func CreateRepeater(name, model string) *SwitchFrame {
+	rptr := CreateSwitch(name, model)
+	rptr.AddGroup("Repeater")
+	return rptr
+}
+
 // AddIntrfc includes a new interface frame for the switch.  Error is returned
 // if the interface (or one with the same name) is already attached to the SwitchFrame
 func (sf *SwitchFrame) AddIntrfc(iff *IntrfcFrame) error {
@@ -1025,6 +1052,13 @@ func CreateHost(name, model string, cores int) *EndptFrame {
 // CreateNode is a constructor.  It creates an endpoint frame, does not mark with Host, Server, or EUD 
 func CreateNode(name, model string, cores int) *EndptFrame {
 	return CreateEndpt(name, model, cores)
+}
+
+// CreateSensor is a constructor.  
+func CreateSensor(name, model string) *EndptFrame {
+	sensor := CreateEndpt(name, model, 1)
+	sensor.AddGroup("Sensor")
+	return sensor
 }
 
 // CreateSrvr is a constructor.  It creates an endpoint frame and marks it as a server
