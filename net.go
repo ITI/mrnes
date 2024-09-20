@@ -15,6 +15,7 @@ import (
 	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -38,6 +39,15 @@ type intrfcRate struct {
 type floatPair struct {
 	x, y float64
 }
+
+type classQueue struct {
+	classID int
+	ingressLambda float64	// sum of rates of flows in this class on the ingress side
+	egressLambda float64	// sum of rates of flows in this class on the egress side
+	inQueue	int				// number of enqueued packets
+}
+
+
 
 // NetworkMsgType give enumeration for message types that may be given to the network
 // to carry.  packet is a discrete packet, handled differently from flows.
@@ -440,9 +450,6 @@ type intrfcState struct {
 	Trace       bool            // switch for calling add trace
 	Drop		bool			// whether to permit packet drops
 
-	IngressClassLambda	map[int]float64	
-	EgressClassLambda	map[int]float64
-
 	ToIngress	map[int]float64
 	ThruIngress	map[int]float64
 	ToEgress	map[int]float64
@@ -451,10 +458,9 @@ type intrfcState struct {
 	IngressLoad	float64		// sum of rates of flows approach interface from ingress side. 
 	EgressLoad	float64		// sum of rates of flows approach interface from egress side
 
-	Waiting		[]intFloat	// classID indexes  
-
-	PcktClass   float64
-	Packets     int
+	ClassQueue	map[int]classQueue	// mapID to (number in queue, departure time of last)
+	IngressDepart	float64	
+	EgressDepart	float64
 }
 
 // createIntrfcState is a constructor, assumes defaults on unspecified attributes
@@ -469,13 +475,63 @@ func createIntrfcState() *intrfcState {
 	iss.ToEgress		   = make(map[int]float64)
 	iss.ThruEgress		   = make(map[int]float64)
 
-	iss.IngressClassLambda = make(map[int]float64)
-	iss.EgressClassLambda  = make(map[int]float64)
+	iss.ClassQueue = make(map[int]classQueue)
 
-	iss.Waiting            = make([]classLambda)
-
-	iss.PcktClass = 0.05
 	return iss
+}
+
+
+// computeWait estimates the time an arrival in classID is in the system,
+// for either an ingress or egress interface.
+// Formula for class k arrival is
+//
+//	W_k = \frac{R + \sum_{j=1}^{k-1} (rho_j*W_j) + D*\sum_{j=1}^{k} Q_j|}{1-\sum_{j=1}^k \rho_j}
+//
+//	where \rho_j = D*\lambda_j (utilization of class j), Q_j is number of class-j packets awaiting service, and
+//	R is the (measured) residual service time
+//
+func (intrfc *intrfcStruct) computeWait(classID int, R float64, D float64, ingress bool) float64 {
+	var agg float64
+	idxs := int[]{}
+	var allRho float64 
+
+	for clsID, cg := range intrfc.ClassQueue {
+		idxs = append(idxs, clsID)
+		if ingress {
+			allRho += cg.ingressLambda*D
+		} else {
+			allRho += cg.egressLambda*D
+		}
+	}
+
+	sort.Ints(idxs)
+	rbar := allRho*D/2.0
+
+	rhoW := []float64{}
+	rho  := []float64{}
+ 
+	var rhoSum float64 
+	var rhoWSum float64
+	var qSum float64
+	var W float64
+	var rhoW float64
+
+	for _, clsID := range idxs {
+		if clsID == 0 {
+			continue
+		}
+		qSum += float64(intrfc.ClassQueue[clsID])
+		if ingress {
+			rho     = cq.ingressLambda*D
+			rhoSum += rho
+		} else {
+			rho     = cq.egressLambda*D
+			rhoSum += rho
+		}	
+		W = (rbar + rhoWSum + D*qSum)/(1-rhoSum)
+		rhoWSum += rho*W
+	}
+	return W
 }
 
 // createIntrfcStruct is a constructor, building an intrfcStruct from a desc description of the interface
@@ -1743,7 +1799,8 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 
 	// cast data argument to network message
 	nm := msg.(NetworkMsg)
-	msgClassID := nm.ClassID
+	classID := nm.ClassID
+
 
 	// message length in Mbits
 	msgLen := float64(8*nm.MsgLen)/1e+6
@@ -1753,9 +1810,16 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	var delay float64
 	intrfc.addTrace("enterEgressIntrfc", &nm, nowInSecs)
 
-	// look up mean waiting time for this class here
-	delay := msgLen/intrfc.Bndwdth + intrfc.Waiting[msgClassID]
- 	
+	// look up mean waiting time for this class here.
+	// Compute actual residual
+	resSrv := math.Max(0.0, evtMgr.CurrentSeconds()-intrfc.EgressDepart)
+	delay := intrfc.computeWait(classID, resSrv , msgLen/intrfc.Bndwdth, false)
+
+	// indicate the message is in its class's 'waiting for service' queue
+	cq := intrfc.ClassQueue[msgClassID]
+	cq.inQueue += 1
+ 
+	// packet enters service at delay units of time after this point
 	evtMgr.Schedule(egressIntrfc, nm, exitEgressIntrfc, vrtime.SecondsToTime(delay))
 
 	// event-handlers are required to return _something_
@@ -1765,24 +1829,35 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 
 
 // exitEgressIntrfc implements an event handler for the departure of a message from an interface.
+// It is called at the point a message enters service, which is when we decrement the number
+// of packets of its class 
+
 // It determines the time-through-network of the message and schedules the arrival
 // of the message at the ingress interface
 func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any {
 	intrfc := egressIntrfc.(*intrfcStruct)
 	nm := msg.(NetworkMsg)
 	flowID := nm.FlowID
-	ClassID := nm.ClassID
+	classID := nm.ClassID
 
+	// indicate the message has left the 'waiting for service' queue
+	cq := intrfc.ClassQueue[classID]
+	cq.inQueue -= 1
+
+	departSrv := (float64(8*nm.MsgLen)/1e+6)/intrfcBndwdth
 	nxtIntrfc := IntrfcByID[(*nm.Route)[nm.StepIdx].dstIntrfcID]
 
-	intrfc.PrmDev.LogNetEvent(evtMgr.CurrentTime(), &nm, "exit")
-	intrfc.LogNetEvent(evtMgr.CurrentTime(), &nm, "exit")
+	departTime := evtMgr.CurrentTime()+departSrv
+	intrfc.PrmDev.LogNetEvent(departTime, &nm, "exit")
+	intrfc.LogNetEvent(departTime, &nm, "exit")
+	intrfc.EgressDepart = departTime
 
 	intrfc.addTrace("exitEgressIntrfc", &nm, evtMgr.CurrentSeconds())
 
 	// transitDelay will differentiate between point-to-point wired connection and passage through a network
 	netDelay, net := transitDelay(&nm)
 
+	// N.B. return to pckt drop
 	// sample the probability of a successful transition and packet drop
 	// potentially drop the message
 	if (intrfc.Cable == nil || intrfc.Media != Wired) {
