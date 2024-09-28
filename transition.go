@@ -92,19 +92,8 @@ type RtnDescs struct {
 type NetMsgIDs struct {
 	ExecID int		// execution id, from application
 	FlowID int		// flow id
+	ClassID int
 	ConnectID int	// connection id
-}
-
-func RequestRsrvn() {
-	// if reservation is true, the flow is a flow, and the flow action is Srt
-	// check to see whether reservation can be satisfied after the existing allocation
-	// to the reserved flow is removed
-	if classID && connDesc.Action != End {
-		available := LimitingBndwdth(srcDev, dstDev, np.AcceptedRate[flowID]) 
-		if available < requestRate {
-			return -1, 0.0, false
-		}
-	}
 }
 
 // EnterNetwork is called after the execution from the application layer
@@ -136,7 +125,12 @@ func RequestRsrvn() {
 // | Major Flow      | FlowConn | Srt, Chg, End | Zero, Place, Simulate | flowID>0                |
 //
 func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev string, msgLen int, 
-	connDesc *ConnDesc, IDs NetMsgIDs, rtns RtnDescs, requestRate float64, classID int, msg any) (int, float64, bool) {
+	connDesc *ConnDesc, IDs NetMsgIDs, rtns RtnDescs, requestRate float64, msg any) (int, float64, bool) {
+
+	// pull out the IDs for clarity
+	flowID := IDs.FlowID
+	connectID := IDs.ConnectID
+	classID := IDs.ClassID
 	
 	// if connectID>0 make sure that an entry in np.Connections exists
 	_, present := np.Connections[connectID]
@@ -144,16 +138,11 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		panic(fmt.Errorf("non-zero connectID offered to EnterNetwork w/o corresponding Connections entry"))
 	}
 
-	// pull out the IDs for clarity
-	flowID := IDs.FlowID
-	connectID := IDs.ConnectID
-
 	// if flowID >0 and flowAction != Srt, make sure that various np data structures that use it for indexing exist
 	if flowID > 0 && connDesc.Action != Srt {
 		_, present0 := np.RequestRate[flowID]
 		_, present1 := np.AcceptedRate[flowID]
-		_, present2 := np.FlowCoeff[flowID]
-		if !(present0 && present1 && present2) { 
+		if !(present0 && present1) { 
 			panic(fmt.Errorf("flowID>0 presented to EnterNetwork without supporting data structures"))
 		}
 	}
@@ -188,21 +177,22 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		}
 	}
 
-	np.RequestedRate[flowID] = requestRate
-	// in the case this is a reservation and a starting action,
-	// passing the test above implies that the requested rate
-	// is acceptable
-	// see if a connectionCode needs to be generated
-	if !(connectID > 0) {
+	// A packet entry has flowID == 0
+	if flowID>0 {
+		np.RequestRate[flowID] = requestRate
+	}
 
+	if !(connectID > 0) {
 		// tell the portal about the arrival, passing to it a description of the
 		// response to be made, and the number of frames of the same message that
 		// need to be received before reporting completion
 		connectID = np.Arrive(rtns, numFrames)
 
 		// remember the flowIDs, given the connectionID
-		np.Connections[connectID] = flowID
-		np.InvConnection[flowID] = connectID
+		if flowID > 0 {
+			np.Connections[connectID] = flowID
+			np.InvConnection[flowID] = connectID
+		}
 	}	
 
 	// Flows and packets are handled differently
@@ -221,40 +211,18 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	// of the endpt's egress interface.  Segment the message into frames and push them individually
 	delay := float64(0.0)
 
-	// if the packet is bound to a major flow and has a request rate, ensure that the request
-	// rate is not larger than the available bandwidth of the flow.
-	if requestRate > 0 && flowID > 0 {
-		mfp := np.FlowPortal[flowID]
-		var used float64
-		for _, rate := range mfp.AcceptedRate {
-			used += rate
-		}
-		available := np.AcceptedRate[flowID]-used
-		if !(available > 0 ) {
-			return -1, 0.0, false
-		}
-		requestRate = math.Min(requestRate, np.AcceptedRate[flowID]-used)
-	}
-
-	if requestRate > 0 && !(flowID > 0) {
-		availbndwdth := AvailBndwdth(srcDev, dstDev)
-		if !(availbndwdth > 0 ) {
-			return -1, 0.0, false
-		}
-		requestRate = math.Min(requestRate, availbndwdth)
-	}
-
 	for fmNumber:=0; fmNumber<numFrames; fmNumber++ {
 		nm := new(NetworkMsg)
 		nm.StepIdx = 0
 		nm.Route = route
-		nm.SrvRate  = -1.0
-		nm.PcktRate = requestRate
+		nm.Rate  = 0.0
+		nm.PcktRate = math.MaxFloat64/4.0
 		nm.PrArrvl = 1.0
 		nm.StartTime = evtMgr.CurrentSeconds()
 		nm.MsgLen = frameSize
 		nm.ConnectID = connectID
 		nm.FlowID = flowID
+		nm.ClassID = classID
 		nm.Connection = *connDesc
 		nm.PcktIdx = fmNumber
 		nm.NumPckts = numFrames
@@ -263,11 +231,10 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		// schedule the message's next destination 
 		np.SendNetMsg(evtMgr, nm, delay)
 
-		// how long to get through the device to the interface?
-		// ServiceRate gives available bandwidth as a function of the connection type and embedding
-		// Notice accumulation of delay for each successive frame, meaning that one frame needs to get completely
-		// out before the next one begins
-		delay += (float64(frameSize*8) / 1e6) / intrfc.ServiceRate(nm, false)
+		// Now long to get through the device to the interface?
+		// The delay above should probably measure CPU bandwidth to deliver to the interface,
+		// but it is a small number and another parameter to have to deal with, so we just use interface bandwidth
+		delay += (float64(frameSize*8) / 1e6) / intrfc.State.Bndwdth
 		delay += intrfc.State.Delay
 	}	
 	return connectID, requestRate, true
@@ -282,8 +249,6 @@ func (np *NetworkPortal) FlowEntry(evtMgr *evtm.EventManager, srcDev, dstDev str
 	// set the network message and flow connection types
 	flowAction := connDesc.Action
 
-	reservation := (classID > 0)
-
 	// revise the requested rate for the major flow
 	np.RequestRate[flowID] = requestRate
 
@@ -291,28 +256,17 @@ func (np *NetworkPortal) FlowEntry(evtMgr *evtm.EventManager, srcDev, dstDev str
 	if flowAction == Srt {
 		// include a new flow into the network infrastructure.
 		// return a structure whose entries are used to estimate latency when requested
-		np.FlowCoeff[flowID] = BuildFlow(flowID, classID, route)
+		np.LatencyConsts[flowID] = BuildFlow(flowID, classID, route)
 	}
 
 	// change the flow rate for the flowID and take note of all
 	// the major flows that were recomputed
-	chgFlowIDs := np.EstablishFlowRate(evtMgr, flowID, classID, requestRate, reservation, route, flowAction)
-
-	// For each of the modified flows recompute the utilization vector
-	// for use in the 'Place' latency model. 
-	for flwID := range chgFlowIDs {
-		rhoVec := np.ComputeRhoVec(flwID, np.AcceptedRate[flwID], route)
-
-		// save that vector in the portal's FlowCoeff record for the named flow
-		pc := np.FlowCoeff[flwID]
-		pc.RhoVec = rhoVec
-		np.FlowCoeff[flwID] = pc
-	}
+	chgFlowIDs := np.EstablishFlowRate(evtMgr, flowID, classID, requestRate, route, flowAction)
 
 	// create the network message to be introduced into the network.  
 	// 
-	nm := NetworkMsg{Route: route, SrvRate: np.AcceptedRate[flowID], PrArrvl: 1.0, MsgLen: msgLen,
-		Connection: *connDesc, ConnectID: connectID, FlowID: flowID, 
+	nm := NetworkMsg{Route: route, Rate: np.AcceptedRate[flowID], PcktRate: math.MaxFloat64/4.0,
+			PrArrvl: 1.0, MsgLen: msgLen, Connection: *connDesc, ConnectID: connectID, FlowID: flowID, 
 			Msg: msg, NumPckts: 1, StartTime: evtMgr.CurrentSeconds()}
 
 	// depending on the connLatency we post a message immediately, 
@@ -333,7 +287,7 @@ func (np *NetworkPortal) FlowEntry(evtMgr *evtm.EventManager, srcDev, dstDev str
 		if flwID == flowID {
 			continue
 		}
-		np.ReportFlowChg(evtMgr, flwID, -1, flowAction, latency)
+		np.ReportFlowChg(evtMgr, flwID, flowAction, latency)
 	}
 }
 
@@ -381,11 +335,10 @@ func (np *NetworkPortal) ReportFlowChg(evtMgr *evtm.EventManager, flowID int,
 // BuildFlow establishes data structures in the interfaces and networks crossed
 // by the given route, with a flow having the given flowID.
 // No rate information is passed or set, other than initialization
-func BuildFlow(flowID int, classID int, route *[]intrfcsToDev) PerfCoeff {
+func BuildFlow(flowID int, classID int, route *[]intrfcsToDev) float64 {
 
 	// remember the performance coefficients for 'Place' latency, when requested
-	var pc PerfCoeff
-	pc.RhoVec = make([]float64,0)
+	var latencyConsts float64
 		
 	// for every stop on the route
 	for idx:=0; idx<len((*route)); idx++ {
@@ -403,15 +356,15 @@ func BuildFlow(flowID int, classID int, route *[]intrfcsToDev) PerfCoeff {
 
 		// adjust coefficients for embedded packet latency calculation.
 		// Add the constant delay through the interface for every frame
-		pc.AggConst += egressIntrfc.State.Delay
+		latencyConsts += egressIntrfc.State.Delay
 
 		// if the interface connection is a cable include the interface latency,
 		// otherwise view the network step like an interface where
 		// queueing occurs
 		if egressIntrfc.Cable != nil {
-			pc.AggConst += egressIntrfc.State.Latency
+			latencyConsts += egressIntrfc.State.Latency
 		} else {
-			pc.AggConst += egressIntrfc.Faces.NetState.Latency
+			latencyConsts += egressIntrfc.Faces.NetState.Latency
 		}
 
 		// the device gets a Forward entry for this flowID only if the flow doesn't 
@@ -423,7 +376,7 @@ func BuildFlow(flowID int, classID int, route *[]intrfcsToDev) PerfCoeff {
 			ingressIntrfc := IntrfcByID[(*route)[idx-1].dstIntrfcID]
 			ingressIntrfc.AddFlow(flowID, classID, true)
 
-			pc.AggConst += ingressIntrfc.State.Delay
+			latencyConsts += ingressIntrfc.State.Delay
 		
 			dev := ingressIntrfc.Device
 
@@ -438,11 +391,11 @@ func BuildFlow(flowID int, classID int, route *[]intrfcsToDev) PerfCoeff {
 				// remember the connection from ingress to egress interface in the device (router or switch)
 				if dev.DevType() == RouterCode {
 					rtr := dev.(*routerDev)
-					rtr.addForward(flowID, classID, ip)
+					rtr.addForward(flowID, ip)
 
 				} else if dev.DevType() == SwitchCode {
 					swtch := dev.(*switchDev)
-					swtch.addForward(flowID, classID, ip)
+					swtch.addForward(flowID, ip)
 				}
 			}
 		}
@@ -452,7 +405,7 @@ func BuildFlow(flowID int, classID int, route *[]intrfcsToDev) PerfCoeff {
 		ifcpr := intrfcIDPair{prevID: rtStep.srcIntrfcID, nextID: rtStep.dstIntrfcID}	
 		net.AddFlow(flowID, classID, ifcpr)
 	}
-	return pc
+	return latencyConsts
 }
 
 
@@ -463,6 +416,9 @@ func (np *NetworkPortal) RmFlow(evtMgr *evtm.EventManager, rmflowID int,
 	var dev TopoDev
 
 	// clear the request rate in case of reference before this call completes
+	oldRate := np.RequestRate[rmflowID]
+	classID := np.Class[rmflowID]
+
 	np.RequestRate[rmflowID] = 0.0
 
 	// remove the flow from the data structures of the interfaces, devices, and networks
@@ -478,7 +434,7 @@ func (np *NetworkPortal) RmFlow(evtMgr *evtm.EventManager, rmflowID int,
 		dev = egressIntrfc.Device
 
 		// remove the flow from the interface
-		egressIntrfc.RmFlow(rmflowID, false)
+		egressIntrfc.RmFlow(rmflowID, classID, oldRate, false)
 
 		// adjust the network to the flow departure
 		net := NetworkByID[rtStep.netID]
@@ -489,7 +445,7 @@ func (np *NetworkPortal) RmFlow(evtMgr *evtm.EventManager, rmflowID int,
 		// originate there
 		if idx>0 {
 			ingressIntrfc = IntrfcByID[(*route)[idx-1].dstIntrfcID]
-			ingressIntrfc.RmFlow(rmflowID, true)
+			ingressIntrfc.RmFlow(rmflowID, classID, oldRate, true)
 
 			// remove the flow from the device's forward maps
 			if egressIntrfc.DevType == RouterCode {
@@ -504,11 +460,11 @@ func (np *NetworkPortal) RmFlow(evtMgr *evtm.EventManager, rmflowID int,
 
 
 	// report the change to src and dst if requested
-	np.ReportFlowChg(evtMgr, rmflowID, -1, End, latency)
+	np.ReportFlowChg(evtMgr, rmflowID, End, latency)
 
-	// clear up the maps with indices equal to the ID of the removed flow
-	np.ClearRates(rmflowID)
-	np.ClearConn(rmflowID)	
+	// clear up the maps with indices equal to the ID of the removed flow,
+	// and maps indexed by connectionID of the removed flow
+	np.ClearRmFlow(rmflowID)
 }
 
 // EstablishFlowRate is given a major flow ID, request rate, and a route,
@@ -520,13 +476,10 @@ func (np *NetworkPortal) RmFlow(evtMgr *evtm.EventManager, rmflowID int,
 // revisited, and upper bounds on what their accept rates might be.  This leads to
 // a recursive call to EstabishFlowRate
 //
-func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int, 
-		requestRate float64, reservation bool, route *[]intrfcsToDev, action FlowAction) map[int]bool {
+func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int, classID int,
+		requestRate float64, route *[]intrfcsToDev, action FlowAction) map[int]bool {
 
 	var flowIDs map[int]bool = make(map[int]bool)
-
-	// if the reservation is set we have already 
-	// passed a test on the requested rate, and it will be accepted
 
 	// start off with the asking rate
 	acceptRate := requestRate
@@ -536,13 +489,11 @@ func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int
 		acceptRate = 0.0
 	}
 
-	if !reservation {
-		// but correct the accepted rate when the calculation calls for it
-		acceptRate = np.DiscoverFlowRate(flowID, requestRate, reservation, route)
-	}
+	// FINDME... NaN comes 
+	acceptRate = np.DiscoverFlowRate(flowID, requestRate, route)
 
 	// set the rate, and get back a list of ids of major flows whose rates should be recomputed
-	changes := np.SetFlowRate(evtMgr, flowID, acceptRate, reservation, route, action)
+	changes := np.SetFlowRate(evtMgr, flowID, classID,  acceptRate, route, action)
 
 	// we'll keep track of all the flows calculated (or recalculated)
 	flowIDs[flowID] = true
@@ -552,8 +503,8 @@ func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int
 		if nxtID==flowID {
 			continue
 		}
-		moreIDs := np.EstablishFlowRate(evtMgr, nxtID, 
-			math.Min(nxtRate, np.RequestRate[nxtID]), reservation, route, action)
+		moreIDs := np.EstablishFlowRate(evtMgr, nxtID, np.Class[nxtID],
+			math.Min(nxtRate, np.RequestRate[nxtID]), route, action)
 		flowIDs[nxtID] = true
 		for mID := range moreIDs {
 			flowIDs[mID] = true
@@ -566,9 +517,8 @@ func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int
 // DiscoverFlowRates is called after the infrastructure for new 
 // flow with ID flowID is set up, to determine what its rate will be 
 func (np *NetworkPortal) DiscoverFlowRate(flowID int, 
-		requestRate float64, reservation bool, route *[]intrfcsToDev) float64 {
+		requestRate float64, route *[]intrfcsToDev) float64 {
 
-	// minRate will end up with the minimum reservation along the flow's route
 	minRate := requestRate 
 
 	// visit each step on the route
@@ -605,24 +555,17 @@ func (np *NetworkPortal) DiscoverFlowRate(flowID int,
 			}
 
 			// the minimum rate cannot exceed the unreserved bandwidth of the interface
-			minRate = math.Min(minRate, intrfc.State.OpenBndwdth)
+			minRate = math.Min(minRate, intrfc.State.Bndwdth)
 
 			// toMap will hold the flow IDs of all unreserved major flows that are presented to the interface
-			toMap := []int{}
-			if !reservation {
-				toMap = append(toMap, flowID)
-			}
+			toMap := []int{flowID}
 
 			for flwID, _ := range intrfcMap {
 				// avoid having flowID in more than once
 				if flwID == flowID {
 					continue
 				}
-				// flow flwID is reserved we don't include it in toMap
-				_, present := np.Rsrvd[flwID]
-				if !present {
-					toMap = append(toMap, flwID)	
-				}
+				toMap = append(toMap, flwID)	
 			}
 
 			// for each unreserved flow compute the relative accepted flow rate relative
@@ -630,7 +573,7 @@ func (np *NetworkPortal) DiscoverFlowRate(flowID int,
 			// The flow of interest, 
 			if len(toMap) > 0 {
 				rsrvdFracVec := ActivePortal.requestedLoadFracVec(toMap)
-				minRate = math.Min(minRate, rsrvdFracVec[0]*intrfc.State.OpenBndwdth) 
+				minRate = math.Min(minRate, rsrvdFracVec[0]*intrfc.State.Bndwdth) 
 			}
 
 			// when focused on the egress side consider the network faced by the interface
@@ -641,35 +584,27 @@ func (np *NetworkPortal) DiscoverFlowRate(flowID int,
 				nxtIntrfc := IntrfcByID[rtStep.dstIntrfcID]
 
 				// get identities of flows that share interfaces on either side of network
-				toMap = []int{}
-				if !reservation {
-					toMap = append(toMap, flowID)
-				}
+				toMap = []int{flowID}
+
 				for flwID := range intrfc.State.ThruEgress{
 					if flwID==flowID {
 						continue
 					}
-					_, present := np.Rsrvd[flwID]
-					if !present {
-						toMap = append(toMap, flwID)
-					}
+					toMap = append(toMap, flwID)
 				}
 				for flwID := range nxtIntrfc.State.ToIngress{
 					if slices.Contains(toMap, flwID) {
 						continue
 					}
-					_, present := np.Rsrvd[flwID]
-					if !present {
-						toMap = append(toMap, flwID)
-					}
+					toMap = append(toMap, flwID)
 				}
 				// get the relative ask fraction among these of flowID
 				if len(toMap) > 0 {
 					rsrvdFracVec := ActivePortal.requestedLoadFracVec(toMap)
 
 					// imagine that the network balances bandwidth allocation 
-					// so that we can expect rsrvdFracVec[0]*net.NetState.OpenBndwdth for flowID
-					minRate = math.Min(minRate, rsrvdFracVec[0]*net.NetState.OpenBndwdth) 
+					// so that we can expect rsrvdFracVec[0]*net.NetState.Bndwdth for flowID
+					minRate = math.Min(minRate, rsrvdFracVec[0]*net.NetState.Bndwdth) 
 				}
 			}
 		}
@@ -680,7 +615,7 @@ func (np *NetworkPortal) DiscoverFlowRate(flowID int,
 // SetFlowRate sets the accept rate for major flow flowID all along its path,
 // and notes the identities of major flows which need attention because this change
 // may impact them or other flows they interact with
-func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acceptRate float64, classID int,
+func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, classID int, acceptRate float64, 
 		route *[]intrfcsToDev, action FlowAction) map[int]float64  {
 
 	// this is for keeps (for now...)
@@ -739,19 +674,14 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 			isCongested := intrfc.IsCongested(ingressSide)
 
 			if (wasCongested || isCongested) { 
-				toMap := []int{}
-				if !reservation {
-					toMap = append(toMap, flowID)
-				}
+				toMap := []int{flowID}
+
 				for flwID, _ := range intrfcMap {
 					// avoid having flowID in more than once
 					if flwID == flowID {
 						continue
 					}
-					_, present := np.Rsrvd[flwID]
-					if !present {
-						toMap = append(toMap, flwID)	
-					}
+					toMap = append(toMap, flwID)	
 				}
 
 				var rsrvdFracVec []float64
@@ -763,7 +693,7 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 					if flwID == flowID {
 						continue
 					}
-					rsvdRate := rsrvdFracVec[idx]*intrfc.State.OpenBndwdth
+					rsvdRate := rsrvdFracVec[idx]*intrfc.State.Bndwdth
 
 					// remember the least bandwidth upper bound for major flow flwID
 					chgRate, present := changes[flwID]
@@ -782,43 +712,25 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 
 				net := intrfc.Faces
 
-				if reservation {
-					// see if this flow is already represented in the network
-					_, present := net.NetState.Rsrvd[flowID]
-					if !present {
-						// remember the first time
-						net.NetState.Rsrvd[flowID] = acceptRate
-						net.NetState.OpenBndwdth -= acceptRate
-					}
-				} 
-
 				wasCongested := net.IsCongested(intrfc, nxtIntrfc)
 				net.ChgFlowRate(flowID, ifcpr, acceptRate)
 				isCongested := net.IsCongested(intrfc, nxtIntrfc)
 
 				if wasCongested || isCongested {
-					toMap := []int{}
-					if !reservation {
-						toMap = append(toMap, flowID)
-					} 
+					toMap := []int{flowID}
+
 					for flwID, _ := range intrfc.State.ThruEgress {
 						if flwID == flowID {
 							continue
 						}
-						_, present := np.Rsrvd[flwID]
-						if !present {
-							toMap = append(toMap, flwID)
-						}
+						toMap = append(toMap, flwID)
 					}
 					nxtIntrfc := IntrfcByID[rtStep.dstIntrfcID]
 					for flwID, _ := range nxtIntrfc.State.ToIngress {
 						if slices.Contains(toMap, flwID) {
 							continue
 						}
-						_, present := np.Rsrvd[flwID]
-						if !present {
-							toMap = append(toMap, flwID)
-						}
+						toMap = append(toMap, flwID)
 					}
 					var rsrvdFracVec []float64
 					if len(toMap) > 0 {
@@ -829,7 +741,7 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 						if flwID == flowID {
 							continue
 						}
-						rsvdRate := rsrvdFracVec[idx]*net.NetState.OpenBndwdth
+						rsvdRate := rsrvdFracVec[idx]*net.NetState.Bndwdth
 						chgRate, present := changes[flwID]
 						if present {
 							chgRate = math.Min(chgRate, rsvdRate)
@@ -843,90 +755,6 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 		}
 	}
 	return changes
-}
-
-// ComputeRhoVec computes a data structure for the named major flow that 
-// holds the utilization for every interface and network
-// along the path, with the given acceptRate being the 'arrival rate' and the bandwidth available
-// at an interface or network being the service rate
-//   Another role played by ComputeRhoVec is to recompute the total ingress and egress loads on
-// interfaces, because at the time ComputeRhoVec is called all the changes induced by a rate change
-// have settled 
-func (np *NetworkPortal) ComputeRhoVec(flowID int, 
-		acceptRate float64, route *[]intrfcsToDev) []float64 {
-
-	rhoVec := []float64{}
-
-	// working variables
-	var intrfcLoad float64
-	var intrfc *intrfcStruct
-
-	// for every stop on the route
-	for idx:=0; idx<len((*route)); idx++ {
-
-		// remember the particulars of this step in the route
-		rtStep := (*route)[idx]
-
-		// flag indicating whether we need to analyze the ingress side of the route step.
-		// The egress side is always analyzed
-		doIngressSide := (idx>0)
-
-		// ingress side first, then egress side
-		for sideIdx:=0; sideIdx<2; sideIdx++ {
-			ingressSide := (sideIdx==0)
-			// the analysis looks the same for the ingress and egress sides, so
-			// the same code block can be used for it.   Skip a side that is not
-			// consistent with the route step
-			if (ingressSide && !doIngressSide) {
-				continue
-			}
-
-			// set up intrfc depending on which interface side we're analyzing
-			if ingressSide {
-				// router steps describe interface pairs across a network,
-				// so our ingress interface ID is the destination interface ID
-				// of the previous routing step
-				intrfc = IntrfcByID[(*route)[idx-1].dstIntrfcID]
-
-				// compute the total load presented to the ingress side of the interface,
-				// and save it 
-				intrfcLoad = float64(0.0)
-				for _, load := range intrfc.State.ToIngress {
-					intrfcLoad += load
-				}
-				intrfc.State.IngressLoad = intrfcLoad
-			} else {
-				intrfc = IntrfcByID[(*route)[idx].srcIntrfcID]
-
-				// compute the total load presented to the egress side of the interface,
-				// and save it 
-				intrfcLoad = float64(0.0)
-				for _, load := range intrfc.State.ToEgress {
-					intrfcLoad += load
-				}
-				intrfc.State.EgressLoad = intrfcLoad
-			}
-
-			// compute the relative utilization of the accepted rate to the bandwidth available to it,
-			// assumed to be the total bandwidth on this side, less the sum of rates of other flows 
-			// passing through the interface.
-			// Notice that intrfcLoad is carried in from the apppropriate loop above
-			util := acceptRate/(intrfc.State.OpenBndwdth-intrfcLoad+acceptRate)
-			rhoVec = append(rhoVec, util)
-	
-			if !ingressSide {
-				net := NetworkByID[rtStep.netID]
-				//egressUtil := acceptRate/(net.NetState.OpenBndwdth-intrfc.State.EgressLoad)
-				egressUtil := acceptRate/net.NetState.Bndwdth
-				nxtIntrfc := IntrfcByID[rtStep.dstIntrfcID]
-				load := intrfc.State.EgressLoad + nxtIntrfc.State.IngressLoad
-				ingressUtil := acceptRate/(net.NetState.OpenBndwdth - load + acceptRate )
-				util = math.Max(egressUtil, ingressUtil)
-				rhoVec = append(rhoVec, util)
-			}
-		}
-	}
-	return rhoVec
 }
 
 // SendNetMsg moves a NetworkMsg, depending on the latency model.
@@ -978,7 +806,7 @@ func (np *NetworkPortal) PlaceNetMsg(evtMgr *evtm.EventManager, nm *NetworkMsg, 
 	ingressIntrfc := IntrfcByID[ingressIntrfcID]
 
 	// compute the time through the network if simulated _now_ (and with no packets ahead in queue)
-	latency := np.ComputeLatency(nm)
+	latency := np.ComputeFlowLatency(nm)
 
 	// mark the message to indicate arrival at the destination
 	nm.StepIdx = len((*nm.Route))-1
@@ -997,8 +825,9 @@ func (np *NetworkPortal) ComputeFlowLatency(nm *NetworkMsg) float64 {
 		return 0.0
 	}
 
-	connType := nm.Connection.Type
+	// the latency type will be 'Place' if we reach here,
 	flowID  := nm.FlowID
+	classID := nm.ClassID
 
 	route    := nm.Route
 	
@@ -1006,75 +835,25 @@ func (np *NetworkPortal) ComputeFlowLatency(nm *NetworkMsg) float64 {
 	if nm.MsgLen < frameSize {
 		frameSize = nm.MsgLen
 	}
+	msgLen := float64(frameSize*8)/1e+6
 
-	if connType == FlowConn {
-		// value of input variable offset will be zero, and is irrelevant
-		accept := np.AcceptedRate[flowID]
-			
-		// initialize latency with all the constants on the path
-		latency := np.FlowCoeff[flowID].AggConst
+	// initialize latency with all the constants on the path
+	latency := np.LatencyConsts[flowID]
 
-		// recover the queuing utilizations
-		rhoVec := np.FlowCoeff[flowID].RhoVec
-
-		// use M/D/1 mean time in system for each queuing stop to estimate
-		// time through the interfaces and networks. Implicit in use of rhoVec
-		// is that the leading edge of the major flow gets the bandwidth allocation
-		// of the flow
-		for idx:=0; idx< len((*route)); idx++ {
-			rtStep := (*route)[idx]
-			srcIntrfc := IntrfcByID[rtStep.srcIntrfcID]
-			dstIntrfc := IntrfcByID[rtStep.dstIntrfcID]
-			net := srcIntrfc.Faces
-			offsetIdx := 3*idx
-
-			// use rhoVec in the order created
-			latency += EstMD1Latency(rhoVec[offsetIdx],   frameSize, srcIntrfc.Bndwdth)
-			latency += EstMD1Latency(rhoVec[offsetIdx+1], frameSize, dstIntrfc.Bndwdth)
-			latency += EstMD1Latency(rhoVec[offsetIdx+2], frameSize, net.Bndwdth)
-		}
-		return latency
-	}
-
-	// compute the estimated mean time of transfer.
-	// Start off with the constants
-	latency := np.FlowCoeff[flowID].AggConst
-
-	frameBits := frameSize*8
-	var transIntrfc float64
-	var maxTrans float64 
-	var bndwdth float64
-	
-	route := nm.Route
-
-	// add the time through every interface on the route
-	for idx:=0; idx<len((*route)); idx++ {
+	for idx:=0; idx< len((*route)); idx++ {
 		rtStep := (*route)[idx]
-	
-		if idx>0 {
-			ingressIntrfc := IntrfcByID[(*route)[idx-1].dstIntrfcID]
+		srcIntrfc := IntrfcByID[rtStep.srcIntrfcID]
+		cg := srcIntrfc.State.ClassQueue[classID]
+		latency += (cg.waiting + msgLen/srcIntrfc.State.Bndwdth)
 
-			// get the bandwidth available, which will be the overall interface bandwidth,
-			// minus the total interface Load, plus the rate just established
-			bndwdth = ingressIntrfc.ServiceRate(nm, true)
-			transIntrfc = float64(frameBits)/bndwdth
-			maxTrans = math.Max(maxTrans, transIntrfc)
-			latency += transIntrfc
-		}
+		dstIntrfc := IntrfcByID[rtStep.dstIntrfcID]
+		cg = dstIntrfc.State.ClassQueue[classID]
+		latency += (cg.waiting + msgLen/dstIntrfc.State.Bndwdth)
 
-		egressIntrfc := IntrfcByID[rtStep.srcIntrfcID]
-		bndwdth = egressIntrfc.ServiceRate(nm, false)
-		transIntrfc = float64(frameBits)/bndwdth
-		maxTrans = math.Max(maxTrans, transIntrfc)
-		latency += transIntrfc
-
-		net := NetworkByID[rtStep.netID]
-		bndwdth = net.ServiceRate(nm)
-		transIntrfc = float64(frameBits)/bndwdth
-		maxTrans = math.Max(maxTrans, transIntrfc)
-
-		latency += transIntrfc
+		net := srcIntrfc.Faces
+		latency += net.NetLatency(nm)
 	}
+
 	return latency
 }
 

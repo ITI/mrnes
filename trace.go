@@ -127,7 +127,7 @@ type NetTrace struct {
 	Time      float64 // time in float64
 	Ticks     int64   // ticks variable of time
 	Priority  int64   // priority field of time-stamp
-	MajorID    int    // integer identifier identifying the chain of traces this is part of
+	FlowID    int    // integer identifier identifying the chain of traces this is part of
 	MinorID    int    // integer identifier identifying the chain of traces this is part of
 	ConnectID int     // integer identifier of the network connection
 	ObjID     int     // integer id for object being referenced
@@ -161,8 +161,7 @@ func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, o
 	ntr.Ticks = vrt.Ticks()
 	ntr.Priority = vrt.Pri()
 	ntr.ConnectID = nm.ConnectID
-	ntr.MajorID = nm.MajorID
-	ntr.MinorID = nm.MinorID
+	ntr.FlowID = nm.FlowID
 	ntr.ObjID = objID
 	ntr.Op = op
 	ntr.PcktIdx = nm.PcktIdx
@@ -172,6 +171,6 @@ func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, o
 	traceTime := strconv.FormatFloat(vrt.Seconds(), 'f', -1, 64)
 
 	trcInst := TraceInst{TraceTime: traceTime, TraceType:"network", TraceStr:ntrStr}
-	tm.AddTrace(vrt, ntr.MajorID, trcInst)
+	tm.AddTrace(vrt, ntr.FlowID, trcInst)
 }
 
