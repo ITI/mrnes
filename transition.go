@@ -122,7 +122,7 @@ type NetMsgIDs struct {
 // | Message         | connType      | flowAction    | connLatency           | flowID
 // | --------------- | ------------- | ------------- | --------------------- | ----------------------- |
 // | Discrete Packet | DiscreteConn  | N/A           | Zero, Place, Simulate | >0 => embedded          |
-// | Major Flow      | FlowConn | Srt, Chg, End | Zero, Place, Simulate | flowID>0                |
+// | Flow            | FlowConn      | Srt, Chg, End | Zero, Place, Simulate | flowID>0                |
 //
 func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev string, msgLen int, 
 	connDesc *ConnDesc, IDs NetMsgIDs, rtns RtnDescs, requestRate float64, msg any) (int, float64, bool) {
@@ -197,9 +197,13 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 
 	// Flows and packets are handled differently
 	if connDesc.Type == FlowConn {
-		np.FlowEntry(evtMgr, srcDev, dstDev, msgLen, connDesc, 
+		accepted := np.FlowEntry(evtMgr, srcDev, dstDev, msgLen, connDesc, 
 			flowID, classID, connectID, requestRate, route, msg)
-		return connectID, np.AcceptedRate[flowID], true
+		if accepted {
+			return connectID, np.AcceptedRate[flowID], true
+		} else {
+			return connectID, 0.0, false
+		}
 	}
 
 	// get the interface through which the message passes to get to the network.
@@ -244,7 +248,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 // FlowEntry handles the entry of major flows to the network
 func (np *NetworkPortal) FlowEntry(evtMgr *evtm.EventManager, srcDev, dstDev string, msgLen int,
 	connDesc *ConnDesc, flowID int, classID int, connectID int, 
-		requestRate float64, route *[]intrfcsToDev, msg any) { 
+		requestRate float64, route *[]intrfcsToDev, msg any) bool { 
 
 	// set the network message and flow connection types
 	flowAction := connDesc.Action
@@ -252,7 +256,7 @@ func (np *NetworkPortal) FlowEntry(evtMgr *evtm.EventManager, srcDev, dstDev str
 	// revise the requested rate for the major flow
 	np.RequestRate[flowID] = requestRate
 
-	// Setting up the Major Flow on Srt
+	// Setting up the Flow on Srt
 	if flowAction == Srt {
 		// include a new flow into the network infrastructure.
 		// return a structure whose entries are used to estimate latency when requested
@@ -261,7 +265,11 @@ func (np *NetworkPortal) FlowEntry(evtMgr *evtm.EventManager, srcDev, dstDev str
 
 	// change the flow rate for the flowID and take note of all
 	// the major flows that were recomputed
-	chgFlowIDs := np.EstablishFlowRate(evtMgr, flowID, classID, requestRate, route, flowAction)
+	chgFlowIDs, established := np.EstablishFlowRate(evtMgr, flowID, classID, requestRate, route, flowAction)
+
+	if !established {
+		return false
+	}
 
 	// create the network message to be introduced into the network.  
 	// 
@@ -289,6 +297,7 @@ func (np *NetworkPortal) FlowEntry(evtMgr *evtm.EventManager, srcDev, dstDev str
 		}
 		np.ReportFlowChg(evtMgr, flwID, flowAction, latency)
 	}
+	return true
 }
 
 
@@ -477,7 +486,7 @@ func (np *NetworkPortal) RmFlow(evtMgr *evtm.EventManager, rmflowID int,
 // a recursive call to EstabishFlowRate
 //
 func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int, classID int,
-		requestRate float64, route *[]intrfcsToDev, action FlowAction) map[int]bool {
+		requestRate float64, route *[]intrfcsToDev, action FlowAction) (map[int]bool, bool) {
 
 	var flowIDs map[int]bool = make(map[int]bool)
 
@@ -489,8 +498,12 @@ func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int
 		acceptRate = 0.0
 	}
 
-	// FINDME... NaN comes 
-	acceptRate = np.DiscoverFlowRate(flowID, requestRate, route)
+	var found bool
+	acceptRate, found = np.DiscoverFlowRate(flowID, requestRate, route)
+	if !found {
+		empty := map[int]bool{}
+		return empty, false
+	}
 
 	// set the rate, and get back a list of ids of major flows whose rates should be recomputed
 	changes := np.SetFlowRate(evtMgr, flowID, classID,  acceptRate, route, action)
@@ -498,28 +511,37 @@ func (np *NetworkPortal) EstablishFlowRate(evtMgr *evtm.EventManager, flowID int
 	// we'll keep track of all the flows calculated (or recalculated)
 	flowIDs[flowID] = true
 
-	// revisit every major flow whose converged rate might be affected by the rate setting in flow flowID
+	// revisit every flow whose converged rate might be affected by the rate setting in flow flowID
 	for nxtID, nxtRate := range changes {
 		if nxtID==flowID {
 			continue
 		}
-		moreIDs := np.EstablishFlowRate(evtMgr, nxtID, np.Class[nxtID],
+		moreIDs, established := np.EstablishFlowRate(evtMgr, nxtID, np.Class[nxtID],
 			math.Min(nxtRate, np.RequestRate[nxtID]), route, action)
+
+		if !established {
+			empty := map[int]bool{}
+			return empty, false
+		}
+			
 		flowIDs[nxtID] = true
 		for mID := range moreIDs {
 			flowIDs[mID] = true
 		}
 	}
-	return flowIDs
+	return flowIDs, true
 }
 
 
 // DiscoverFlowRates is called after the infrastructure for new 
 // flow with ID flowID is set up, to determine what its rate will be 
 func (np *NetworkPortal) DiscoverFlowRate(flowID int, 
-		requestRate float64, route *[]intrfcsToDev) float64 {
+		requestRate float64, route *[]intrfcsToDev) (float64, bool) {
 
 	minRate := requestRate 
+
+	// is the requestRate a hard ask (inelastic) or best effort
+	isElastic := np.Elastic[flowID]
 
 	// visit each step on the route
 	for idx:=0; idx<len((*route)); idx++ {
@@ -554,26 +576,58 @@ func (np *NetworkPortal) DiscoverFlowRate(flowID int,
 				intrfcMap = intrfc.State.ToEgress
 			}
 
-			// the minimum rate cannot exceed the unreserved bandwidth of the interface
-			minRate = math.Min(minRate, intrfc.State.Bndwdth)
+			// usedBndwdth will accumulate the rates of all existing flows, plus the reservation
+			usedBndwdth := intrfc.State.RsrvdFrac*intrfc.State.Bndwdth
 
-			// toMap will hold the flow IDs of all unreserved major flows that are presented to the interface
-			toMap := []int{flowID}
-
-			for flwID, _ := range intrfcMap {
-				// avoid having flowID in more than once
-				if flwID == flowID {
-					continue
+			// fixedBndwdth will accumulate the rates of all inelastic flows, plus the resevation
+			fixedBndwdth := intrfc.State.RsrvdFrac*intrfc.State.Bndwdth
+			for flwID, rate := range intrfcMap {
+				usedBndwdth += rate
+				if !np.Elastic[flwID] {
+					fixedBndwdth += rate
 				}
-				toMap = append(toMap, flwID)	
 			}
 
-			// for each unreserved flow compute the relative accepted flow rate relative
-			// to the sum of all the accepted flow rates of unreserved flows through the interface.
-			// The flow of interest, 
-			if len(toMap) > 0 {
-				rsrvdFracVec := ActivePortal.requestedLoadFracVec(toMap)
-				minRate = math.Min(minRate, rsrvdFracVec[0]*intrfc.State.Bndwdth) 
+			// freeBndwdth is what is freely available to any flow
+			freeBndwdth := intrfc.State.Bndwdth-usedBndwdth
+
+			// useableBndwdth is what is available to an inelastic flow
+			useableBndwdth := intrfc.State.Bndwdth-fixedBndwdth
+
+			// can a request for inelastic bandwidth be satisfied at all?
+			if !isElastic && useableBndwdth < requestRate {
+				// no
+				return 0.0, false
+			} 
+
+			// can the request on the ingress (non network) side be immediately satisfied?
+			if ingressSide && minRate <= freeBndwdth {
+				// yes
+				continue
+			}
+
+			// an inelastic flow can just grab what it wants (and we'll figure out the
+			// squeeze later). On the egress side we will need to look at the network.
+			//    For an elastic flow we may need to squeeze	
+			toMap := []int{}
+			if np.Elastic[flowID] { 
+				toMap = []int{flowID}
+			
+				for flwID, _ := range intrfcMap {
+					// avoid having flowID in more than once
+					if flwID == flowID {
+						continue
+					}
+
+					if np.Elastic[flwID] {
+						toMap = append(toMap, flwID)	
+					}
+				}
+				
+				loadFracVec := ActivePortal.requestedLoadFracVec(toMap)
+
+				// elastic flowID can get its share of the freely available bandwidth
+				minRate = math.Min(minRate, loadFracVec[0]*freeBndwdth) 
 			}
 
 			// when focused on the egress side consider the network faced by the interface
@@ -583,33 +637,81 @@ func (np *NetworkPortal) DiscoverFlowRate(flowID int,
 				// get a pointer to the interface on the other side of the network
 				nxtIntrfc := IntrfcByID[rtStep.dstIntrfcID]
 
-				// get identities of flows that share interfaces on either side of network
+				// netUsedBndwdth accumulates the bandwidth of all unique flows that 
+				// leave the egress side or enter the other interface's ingress side
+				var netUsedBndwdth float64
+
+				// netFixedBndwdth accumulates the bandwidth of all unique flows that 
+				// leave the egress side or enter the other interface's ingress side
+				var netFixedBndwdth float64
+
+				// create a list of unique flows that leave the egress side or enter the ingress side
+				// and gather up the netUsedBndwdth and netFixedBndwdth rates
+				netFlows := make(map[int]bool)
+				for flwID, rate := range intrfcMap {
+					_, present := netFlows[flwID]
+					if present {
+						continue
+					}
+					netFlows[flwID] = true
+					netUsedBndwdth += rate
+					if !np.Elastic[flwID] {
+						netFixedBndwdth += rate
+					}
+				}
+		
+				// incorporate the flows on the ingress side
+				for flwID, rate := range nxtIntrfc.State.ToIngress {
+					_, present := netFlows[flwID]
+
+					// skip if already seen
+					if present {
+						continue
+					}
+					netUsedBndwdth += rate
+					if !np.Elastic[flwID] {
+						netFixedBndwdth += rate
+					}
+				}
+				
+				// netFreeBndwdth is what is freely available to any flow
+				netFreeBndwdth := net.NetState.Bndwdth-netUsedBndwdth
+
+				// netUseableBndwdth is what is available to an inelastic flow
+				netUseableBndwdth := net.NetState.Bndwdth-netFixedBndwdth
+
+				if netFreeBndwdth <= 0 || netUseableBndwdth <= 0 {
+					return 0.0, false
+				}
+
+				// admit a flow if its request rate is less than the 
+				// netUseableBndwdth
+				if requestRate <= netUseableBndwdth {
+					continue
+				} else if !isElastic {
+					return 0.0, false
+				}
+
+				// admit an elastic flow if all the elastic flows can be squeezed to let it in,
+				// but figure out what its squeezed value needs to be
 				toMap = []int{flowID}
-
-				for flwID := range intrfc.State.ThruEgress{
-					if flwID==flowID {
+				for flwID := range netFlows {
+					if flwID == flowID {
 						continue
 					}
-					toMap = append(toMap, flwID)
-				}
-				for flwID := range nxtIntrfc.State.ToIngress{
-					if slices.Contains(toMap, flwID) {
-						continue
-					}
-					toMap = append(toMap, flwID)
-				}
-				// get the relative ask fraction among these of flowID
-				if len(toMap) > 0 {
-					rsrvdFracVec := ActivePortal.requestedLoadFracVec(toMap)
 
-					// imagine that the network balances bandwidth allocation 
-					// so that we can expect rsrvdFracVec[0]*net.NetState.Bndwdth for flowID
-					minRate = math.Min(minRate, rsrvdFracVec[0]*net.NetState.Bndwdth) 
+					if np.Elastic[flwID] {
+						toMap = append(toMap, flwID)
+					}
 				}
+				loadFracVec := ActivePortal.requestedLoadFracVec(toMap)
+
+				// elastic flowID can get its share of the freely available bandwidth
+				minRate = math.Min(minRate, loadFracVec[0]*netFreeBndwdth) 
 			}
 		}
 	}
-	return minRate
+	return minRate, true
 }
 
 // SetFlowRate sets the accept rate for major flow flowID all along its path,
@@ -620,6 +722,8 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, clas
 
 	// this is for keeps (for now...)
 	np.AcceptedRate[flowID] = acceptRate
+
+	isElastic := np.Elastic[flowID]
 
 	// remember the ID of the major flows whose accepted rates may change
 	changes := make(map[int]float64)
@@ -666,22 +770,34 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, clas
 			if math.Abs(acceptRate-intrfcMap[flowID]) < 1e-3 {
 				continue
 			}
+			
+			fixedBndwdth := intrfc.State.RsrvdFrac*intrfc.State.Bndwdth
+			for flwID, rate := range intrfcMap {
+				if !np.Elastic[flwID] {
+					fixedBndwdth += rate
+				}
+			}
 
-			// if the interface wasn't congested before the change
+			// if the interface wasn't compressing elastic flows before
 			// or after the change, its peers aren't needing attention due to this interface
 			wasCongested := intrfc.IsCongested(ingressSide)
 			intrfc.ChgFlowRate(flowID, classID, acceptRate, ingressSide) 
 			isCongested := intrfc.IsCongested(ingressSide)
 
 			if (wasCongested || isCongested) { 
-				toMap := []int{flowID}
+				toMap := []int{}
+				if isElastic { 	
+					toMap = []int{flowID}
+				}
 
-				for flwID, _ := range intrfcMap {
+				for flwID := range intrfcMap {
 					// avoid having flowID in more than once
 					if flwID == flowID {
 						continue
 					}
-					toMap = append(toMap, flwID)	
+					if np.Elastic[flwID] {
+						toMap = append(toMap, flwID)	
+					}
 				}
 
 				var rsrvdFracVec []float64
@@ -693,7 +809,7 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, clas
 					if flwID == flowID {
 						continue
 					}
-					rsvdRate := rsrvdFracVec[idx]*intrfc.State.Bndwdth
+					rsvdRate := rsrvdFracVec[idx]*(intrfc.State.Bndwdth-fixedBndwdth)
 
 					// remember the least bandwidth upper bound for major flow flwID
 					chgRate, present := changes[flwID]
@@ -708,29 +824,36 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, clas
 
 			// for the egress side consider the network 
 			if !ingressSide {	
-				nxtIntrfc := IntrfcByID[rtStep.dstIntrfcID]
-
 				net := intrfc.Faces
 
-				wasCongested := net.IsCongested(intrfc, nxtIntrfc)
+				dstIntrfc := IntrfcByID[rtStep.dstIntrfcID]
+
+				wasCongested := net.IsCongested(intrfc, dstIntrfc)
 				net.ChgFlowRate(flowID, ifcpr, acceptRate)
-				isCongested := net.IsCongested(intrfc, nxtIntrfc)
+				isCongested := net.IsCongested(intrfc, dstIntrfc)
 
 				if wasCongested || isCongested {
-					toMap := []int{flowID}
+					toMap := []int{}
+					if isElastic {
+						toMap = []int{flowID}
+					}
 
 					for flwID, _ := range intrfc.State.ThruEgress {
 						if flwID == flowID {
 							continue
 						}
-						toMap = append(toMap, flwID)
+						if np.Elastic[flwID] {
+							toMap = append(toMap, flwID)
+						}
 					}
-					nxtIntrfc := IntrfcByID[rtStep.dstIntrfcID]
-					for flwID, _ := range nxtIntrfc.State.ToIngress {
+
+					for flwID, _ := range dstIntrfc.State.ToIngress {
 						if slices.Contains(toMap, flwID) {
 							continue
 						}
-						toMap = append(toMap, flwID)
+						if np.Elastic[flwID] {
+							toMap = append(toMap, flwID)
+						}
 					}
 					var rsrvdFracVec []float64
 					if len(toMap) > 0 {

@@ -10,6 +10,7 @@ type BckgrndFlow struct {
 	FlowID int
 	ClassID int
 	ConnectID int
+	Elastic bool
 	FlowType ConnType
 	Src string
 	Dst string
@@ -21,7 +22,7 @@ type BckgrndFlow struct {
 var BckgrndFlowList map[int]*BckgrndFlow = make(map[int]*BckgrndFlow)
 
 func CreateBckgrndFlow(evtMgr *evtm.EventManager, srcDev string, dstDev string, 
-		requestRate float64, execID int, flowID int, classID int, context any, 
+		requestRate float64, elastic bool, execID int, flowID int, classID int, context any, 
 			hdlr evtm.EventHandlerFunction) (*BckgrndFlow, bool) {
 	
 	if !(requestRate > 0) {
@@ -39,6 +40,8 @@ func CreateBckgrndFlow(evtMgr *evtm.EventManager, srcDev string, dstDev string,
 	bgf.RtnDesc.Cxt = context
 	bgf.RtnDesc.EvtHdlr = hdlr
 	bgf.ConnectID = 0			// indicating absence
+	bgf.Elastic = elastic
+	ActivePortal.Elastic[flowID] = elastic
 
 	connDesc := ConnDesc{Type: FlowConn, Latency: Zero, Action: Srt}
 	IDs := NetMsgIDs{ExecID: execID, FlowID: bgf.FlowID, ClassID: classID}

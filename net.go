@@ -127,6 +127,7 @@ type NetworkPortal struct {
 	RequestRate		map[int]float64		// indexed by flowID to get requested arrival rate
 	AcceptedRate	map[int]float64		// indexed by flowID to get accepted arrival rate
 	Class			map[int]int			// indexed by flowID to get priority class
+	Elastic			map[int]bool		// indexed by flowID to record whether flow is elastic
 	Connections		map[int]int			// indexed by connectID to get flowID
 	InvConnection	map[int]int			// indexed by flowID to get connectID
 	LatencyConsts	map[int]float64		// indexex by flowID to get latency constants on flow's route
@@ -160,6 +161,7 @@ func CreateNetworkPortal() *NetworkPortal {
 	np.RequestRate	 = make(map[int]float64)
 	np.AcceptedRate  = make(map[int]float64)
 	np.Class		 = make(map[int]int)
+	np.Elastic		 = make(map[int]bool)
 	np.Connections	 = make(map[int]int)
 	np.InvConnection = make(map[int]int)
 	np.LatencyConsts = make(map[int]float64)
@@ -510,10 +512,10 @@ type intrfcState struct {
 	ToEgress	map[int]float64
 	ThruEgress	map[int]float64
 
-	PcktClass	float64				// fraction of bandwidth reserved for packets
-	IngressLambda	float64			// sum of rates of flows approach interface from ingress side. 
+	PcktClass	float64			// fraction of bandwidth reserved for packets
+	IngressLambda	float64		// sum of rates of flows approach interface from ingress side. 
 	EgressLambda	float64
-
+	RsrvdFrac		float64			// fraction of bandwidth reserved for non-flow traffic 
 	ClassQueue	map[int]classQueue	// mapID to (number in queue, departure time of last)
 }
 
@@ -530,9 +532,8 @@ func createIntrfcState() *intrfcState {
 	iss.ThruEgress		   = make(map[int]float64)
 	iss.EgressLambda	   = 0.0
 	iss.IngressLambda	   = 0.0
-
+	iss.RsrvdFrac		   = 0.0
 	iss.ClassQueue = make(map[int]classQueue)
-
 	return iss
 }
 
@@ -792,6 +793,8 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 		intrfc.State.Trace = value.boolValue
 	case "drop":
 		intrfc.State.Drop = value.boolValue
+	case "rsrvd":
+		intrfc.State.RsrvdFrac = value.floatValue
 	}
 }
 
@@ -856,14 +859,10 @@ func (intrfc *intrfcStruct) AddFlow(flowID int, classID int, ingress bool) {
 }
 
 // IsCongested determines whether the interface is congested,
-// meaning that the bandwidth used by major flows and reflected
-// in the "To" maps is less than the interface's bandwidth.
-// Note that even through there is a field in the interface holding
-// the sum of rates going through the interface, that sum isn't correct
-// in the midst of recalcating rates as flows come and go, and requested rates
-// change
+// meaning that the bandwidth used by elastic flows is greater than or
+// equal to the unreserved bandwidth
 func (intrfc *intrfcStruct) IsCongested(ingress bool) bool {
-	var usedBndwdth float64 = 0.0
+	var usedBndwdth float64
 	if ingress {
 		for _, rate := range intrfc.State.ToIngress {
 			usedBndwdth += rate
@@ -874,7 +873,11 @@ func (intrfc *intrfcStruct) IsCongested(ingress bool) bool {
 		}
 	}
 
-	if usedBndwdth < intrfc.State.Bndwdth {
+	// !( bandwidth for elastic flows < available bandwidth for elastic flows ) ==
+	// !( usedBndwdth-fixedBndwdth < intrfc.State.Bndwdth-fixedBndwdth )
+	// !( usedBndwdth < intrfc.State.Bndwdth )
+	// 
+	if usedBndwdth < intrfc.State.Bndwdth && !(math.Abs(usedBndwdth-intrfc.State.Bndwdth) < 1e-3) {
 		return false
 	}
 	return true
@@ -1019,8 +1022,28 @@ func (ns *networkStruct) ChgFlowRate(flowID int, ifcpr intrfcIDPair, rate float6
 // which can only happen if the interface bandwidth is larger than the configured bandwidth
 // between these endpoints, and is busy enough to overwhelm it
 func (ns *networkStruct) IsCongested(srcIntrfc, dstIntrfc *intrfcStruct) bool {
-	var load float64 = srcIntrfc.State.EgressLambda+dstIntrfc.State.IngressLambda
-	return ns.NetState.Bndwdth <= load
+
+	// gather the fixed bandwdth for the source
+	usedBndwdth := math.Min(srcIntrfc.State.RsrvdFrac*srcIntrfc.State.Bndwdth, 
+						dstIntrfc.State.RsrvdFrac*dstIntrfc.State.Bndwdth)
+
+	seenFlows := make(map[int]bool)	
+	for flwID, rate := range srcIntrfc.State.ThruEgress {
+		usedBndwdth += rate
+		seenFlows[flwID] = true
+	}
+
+	for flwID, rate := range dstIntrfc.State.ToIngress {
+		if seenFlows[flwID] {
+			continue
+		}
+		usedBndwdth += rate
+	}
+	net := srcIntrfc.Faces
+	if usedBndwdth < net.NetState.Bndwdth && !(math.Abs(usedBndwdth-net.NetState.Bndwdth) < 1e-3) {
+		return false
+	}
+	return true	
 }
 
 // initNetworkStruct transforms information from the desc description
@@ -2106,11 +2129,31 @@ func LimitingBndwdth(srcDevName, dstDevName string) float64 {
 	for _, step := range (*rt) {
 		srcIntrfc := IntrfcByID[step.srcIntrfcID]
 		dstIntrfc := IntrfcByID[step.dstIntrfcID]
-		minBndwdth = math.Min(minBndwdth, srcIntrfc.State.Bndwdth-srcIntrfc.State.EgressLambda)
-		minBndwdth = math.Min(minBndwdth, dstIntrfc.State.Bndwdth-dstIntrfc.State.IngressLambda)
+		var ingressEbndwdth float64 = 0.0
+		var egressEbndwdth float64 = 0.0
+
+		for flowID, rate := range srcIntrfc.State.ToIngress {
+			if ActivePortal.Elastic[flowID] {
+				ingressEbndwdth += rate
+			}
+		}
+	
+		for flowID, rate := range dstIntrfc.State.ToEgress {
+			if ActivePortal.Elastic[flowID] {
+				egressEbndwdth += rate
+			}
+		}
+	
+		fixedIngressBndwdth := srcIntrfc.State.EgressLambda-egressEbndwdth
+		fixedEgressBndwdth  := dstIntrfc.State.IngressLambda-ingressEbndwdth
+			
+		minBndwdth = math.Min(minBndwdth, (1.0-srcIntrfc.State.RsrvdFrac)*srcIntrfc.State.Bndwdth-fixedIngressBndwdth)
+		minBndwdth = math.Min(minBndwdth, (1.0-dstIntrfc.State.RsrvdFrac)*dstIntrfc.State.Bndwdth-fixedEgressBndwdth)
 		minBndwdth = math.Min(minBndwdth, 
-			srcIntrfc.Faces.NetState.Bndwdth-(srcIntrfc.State.EgressLambda+dstIntrfc.State.IngressLambda))
+			srcIntrfc.Faces.NetState.Bndwdth-(fixedIngressBndwdth+fixedEgressBndwdth))
 	}
 	return minBndwdth
 }
+
+
 
