@@ -21,6 +21,7 @@ import (
 type Task struct {
 	OpType       string                    // what operation is being performed
 	req          float64                   // required service
+	reqPri		 int64					   // priority for scheduling
 	ts           float64                   // timeslice
 	completeFunc evtm.EventHandlerFunction // call when finished
 	context      any                       // remember this from caller, to return when finished
@@ -31,9 +32,9 @@ type Task struct {
 var nxtTaskIdx int = 0
 
 // createTask is a constructor
-func createTask(op string, req, ts float64, msg any, context any, complete evtm.EventHandlerFunction) *Task {
+func createTask(op string, req, ts float64, pri int64, msg any, context any, complete evtm.EventHandlerFunction) *Task {
 	nxtTaskIdx += 1
-	return &Task{OpType: op, req: req, ts: ts, Msg: msg, context: context, completeFunc: complete}
+	return &Task{OpType: op, req: req, ts: ts, reqPri: pri, Msg: msg, context: context, completeFunc: complete}
 }
 
 // reqSrvHeap and its methods implement a min-priority heap
@@ -64,6 +65,12 @@ type TaskScheduler struct {
 	inservice reqSrvHeap // manage work being served concurrently
 }
 
+// CryptoScheduler holds data structures supporting the multi-core scheduling of crypto operations
+type CryptoScheduler struct {
+	EncryptScheduler *TaskScheduler
+	DecryptScheduler *TaskScheduler
+}
+
 // CreateTaskScheduler is a constructor
 func CreateTaskScheduler(cores int) *TaskScheduler {
 	ops := new(TaskScheduler)
@@ -74,6 +81,15 @@ func CreateTaskScheduler(cores int) *TaskScheduler {
 	return ops
 }
 
+// CreateCryptoScheduler is a constructor
+func CreateCryptoScheduler(cores int) *CryptoScheduler {
+	cs := new(CryptoScheduler)
+	cs.EncryptScheduler = CreateTaskScheduler(cores/2)
+	cs.DecryptScheduler = CreateTaskScheduler(cores/2)
+	return cs
+}
+
+
 // Schedule puts a piece of work either in queue to be done, or in service.  Parameters are
 // - op : a code for the type of work being done
 // - req : the service requirements for this task, on this computer
@@ -81,11 +97,11 @@ func CreateTaskScheduler(cores int) *TaskScheduler {
 // - msg : the message being processed
 // - complete : an event handler to be called when the task has completed
 // The return is true if the 'task is finished' event was scheduled.
-func (ops *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, ts float64,
+func (ops *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, ts float64, pri int64,
 	context any, msg any, complete evtm.EventHandlerFunction) bool {
 
 	// create the Task, and remember it
-	task := createTask(op, req, ts, msg, context, complete)
+	task := createTask(op, req, ts, pri, msg, context, complete)
 
 	// either put into service or put in the waiting queue
 	inservice := ops.joinQueue(evtMgr, task)
@@ -110,7 +126,9 @@ func (ops *TaskScheduler) joinQueue(evtMgr *evtm.EventManager, task *Task) bool 
 		finished = true
 	}
 	// schedule event handler for when this timeslice completes
-	evtMgr.Schedule(ops, finished, timeSliceComplete, vrtime.SecondsToTime(execute))
+	execTime := vrtime.SecondsToTime(execute)
+	execTime.SetPri(task.reqPri)
+	evtMgr.Schedule(ops, finished, timeSliceComplete, execTime)
 
 	// if the task is going to complete we can schedule the event handler for the end of task
 	if finished {

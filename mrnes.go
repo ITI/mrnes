@@ -21,6 +21,7 @@ var QkNetSim bool = false
 
 // TaskSchedulerByHostName maps an identifier for the scheduler to the scheduler itself
 var TaskSchedulerByHostName map[string]*TaskScheduler = make(map[string]*TaskScheduler)
+var CryptoSchedulerByHostName map[string]*CryptoScheduler = make(map[string]*CryptoScheduler)
 
 // buildDevExecTimeTbl creates a map structure that stores information about
 // operations on switches and routers.
@@ -659,12 +660,11 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 		// create a runtime representation from its desc representation
 		endptDev := createEndptDev(&endpt)
 		endptDev.initTaskScheduler()
+		endptDev.initCryptoScheduler()
 
 		// get name and id
 		endptName := endptDev.endptName
 		endptID := endptDev.endptID
-
-		// save endptDev for lookup by Id and Name
 
 		// for topoDev interface
 		addTopoDevLookup(endptID, endptName, endptDev)

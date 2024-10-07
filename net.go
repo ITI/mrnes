@@ -954,6 +954,7 @@ type endptDev struct {
 	endptEUD     bool
 	endptCores   int
 	endptSched   *TaskScheduler  // shares an endpoint's cores among computing tasks
+	endptCryptoSched *CryptoScheduler
 	endptID      int             // unique integer id
 	endptIntrfcs []*intrfcStruct // list of network interfaces embedded in the endpt
 	endptState   *endptState     // a struct holding endpt state
@@ -1031,6 +1032,12 @@ func (endpt *endptDev) initTaskScheduler() {
 	scheduler := CreateTaskScheduler(endpt.endptCores)
 	endpt.endptSched = scheduler
 	TaskSchedulerByHostName[endpt.endptName] = scheduler
+}
+
+func (endpt *endptDev) initCryptoScheduler() {
+	scheduler := CreateCryptoScheduler(endpt.endptCores)
+	endpt.endptCryptoSched = scheduler
+	CryptoSchedulerByHostName[endpt.endptName] = scheduler
 }
 
 // addIntrfc appends the input intrfcStruct to the list of interfaces embedded in the endpt.
@@ -1588,7 +1595,8 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	intrfc.faces.LogNetEvent(evtMgr.CurrentTime(), nm.execID, nm.connectID, "enter", isPckt, bndwdth)
 
 	// how long to get through the device to the interface?
-	delay := (float64(msgLen*8) / 1e6) / bndwdth
+	// delay := (float64(msgLen*8) / 1e6) / devBndwdth
+	var delay float64 = 0.0	
 
 	// schedule the entry of the leading networkMsg into the first egress interface (from the source endpt)
 	// once the whole packet has connectioned through
