@@ -113,6 +113,15 @@ func (np *NetworkPortal) EndptCPUModel(devName string) string {
 	return ""
 }
 
+func (np *NetworkPortal) EndptBckgrndDrag(devName string) float64 {
+	endpt, present := EndptDevByName[devName]
+	if present {
+		return endpt.endptState.cpudrag
+	}
+	return 1.0
+}
+
+
 // Depart is called to return an application message being carried through
 // the network back to the application layer
 func (np *NetworkPortal) Depart(evtMgr *evtm.EventManager, nm networkMsg) {
@@ -965,6 +974,7 @@ type endptState struct {
 	rngstrm *rngstream.RngStream // pointer to a random number generator
 	trace   bool                 // switch for calling add trace
 	drop	bool				 // whether to support packet drops at interface
+	cpudrag	float64				 // drag factor due to background processing
 	active  map[int]float64
 	load    float64
 	packets int
@@ -996,6 +1006,8 @@ func (endpt *endptDev) setParam(param string, value valueStruct) {
 		endpt.endptState.trace = value.boolValue
 	case "model":
 		endpt.endptModel = value.stringValue
+	case "cpudrag":
+		endpt.endptState.cpudrag = value.floatValue
 	}
 }
 
@@ -1025,6 +1037,7 @@ func createEndptState(name string) *endptState {
 	eps.packets = 0
 	eps.trace = false
 	eps.rngstrm = rngstream.New(name)
+	eps.cpudrag = 1.0
 	return eps
 }
 
