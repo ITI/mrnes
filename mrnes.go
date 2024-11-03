@@ -5,11 +5,14 @@ package mrnes
 import (
 	"fmt"
 	"github.com/iti/evt/evtm"
+	"github.com/iti/evt/vrtime"
+	"github.com/iti/rngstream"
 	"golang.org/x/exp/slices"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
+	"math"
 )
 
 // declare global variables that are loaded from
@@ -21,6 +24,10 @@ var QkNetSim bool = false
 
 // TaskSchedulerByHostName maps an identifier for the scheduler to the scheduler itself
 var TaskSchedulerByHostName map[string]*TaskScheduler = make(map[string]*TaskScheduler)
+
+
+var u01List []float64
+var numU01  int = 10000
 
 // buildDevExecTimeTbl creates a map structure that stores information about
 // operations on switches and routers.
@@ -88,15 +95,107 @@ func NullHandler(evtMgr *evtm.EventManager, context any, msg any) any {
 	return nil
 }
 
+// LoadTopo reads in a topology configuration file and creates from it internal data
+// structures representing the topology.  idCounter starts the enumeration of unique
+// topology object names, and traceMgr is needed to log the names and ids of all the topology objects into the trace dictionary
+func LoadTopo(topoFile string, idCounter int, traceMgr *TraceManager) error { 
+	empty   := make([]byte, 0)
+	ext     := path.Ext(topoFile)
+	useYAML := (ext == ".yaml") || (ext == ".yml")
+
+	tc, err := ReadTopoCfg(topoFile, useYAML, empty)
+
+	if err != nil {
+		return err
+	}
+	// populate topology data structures that enable reference to the structures just read in
+	// initialize NumIDs for generation of unique device/network ids
+
+	NumIDs = idCounter
+
+	// put traceMgr in global variable for reference
+	devTraceMgr = traceMgr
+	createTopoReferences(tc, traceMgr)
+	return nil
+}
+
+// LoadDevExec reads in the device-oriented function timings, puts
+// them in a global table devExecTimeTbl
+func LoadDevExec(devExecFile string) error {
+	empty    := make([]byte, 0)
+	ext      := path.Ext(devExecFile)
+	useYAML  := (ext == ".yaml") || (ext == ".yml")
+	del, err := ReadDevExecList(devExecFile, useYAML, empty)
+	if err != nil {
+		return err
+	}
+	devExecTimeTbl = buildDevExecTimeTbl(del)
+	return nil
+}
+
+// LoadStateParams takes the file names of a 'base' file of performance
+// parameters (e.g., defaults) and a 'modify' file of performance parameters
+// to merge in (e.g. with higher specificity) and initializes the topology
+// elements state structures with these.
+func LoadStateParams(base, mdfy string) error {
+	empty   := make([]byte, 0)
+	ext     := path.Ext(base)
+	useYAML := (ext == ".yaml") || (ext == ".yml")
+
+	xd, err := ReadExpCfg(base, useYAML, empty)
+	if err != nil {
+		return err
+	}	
+
+	var xdx *ExpCfg
+	if len(mdfy) > 0 {
+		ext        := path.Ext(mdfy)
+		useYAML    := (ext == ".yaml") || (ext == ".yml")
+		xdx, err   = ReadExpCfg(mdfy, useYAML, empty)
+		if err != nil {
+			return err
+		}	
+	}
+
+	// use configuration parameters to initialize topology state
+	SetTopoState(xd, xdx)
+	return nil
+}
+
+// BuildExperimentNet bundles the functions of LoadTopo, LoadDevExec, and LoadStateParams
+func BuildExperimentNet(dictFiles map[string]string, useYAML bool, idCounter int, traceMgr *TraceManager) error {
+	topoFile    := dictFiles["topo"]
+	devExecFile := dictFiles["devExec"]
+	baseFile    := dictFiles["exp"]
+	mdfyFile    := dictFiles["mdfy"]
+
+	err1 := LoadTopo(topoFile, idCounter, traceMgr)
+	err2 := LoadDevExec(devExecFile)	
+	err3 := LoadStateParams(baseFile, mdfyFile)
+
+	bckgrndRNG := rngstream.New("bckgrnd")
+	u01List = make([]float64, numU01)
+	for idx:=0; idx<numU01; idx++ {
+		u01List[idx] = bckgrndRNG.RandU01()
+	}
+
+	InitBckgrndFlowList()
+	errs := []error{err1, err2, err3}
+
+	// note that nil is returned if all errors are nil
+	return ReportErrs(errs)
+}
+
+/*
 // BuildExperimentNet is called from the module that creates and runs
 // a simulation. Its inputs identify the names of input files, which it
 // uses to assemble and initialize the model (and experiment) data structures.
-func BuildExperimentNet(syn map[string]string, useYAML bool, idCounter int, traceMgr *TraceManager) {
-	// syn is a map that binds pre-defined keys referring to input file types with file names
+func BuildExperimentNet(dictFiles map[string]string, useYAML bool, idCounter int, traceMgr *TraceManager, evtMgr *evtm.EventManager) {
+	// dictFiles is a map that binds pre-defined keys referring to input file types with file names
 	// call GetExperimentNetDicts to do the heavy lifting of extracting data structures
 	// (typically maps) designed for serialization/deserialization,  and assign those maps to variables
 	// we'll use to re-represent this information in structures optimized for run-time use
-	tc, del, xd, xdx := GetExperimentNetDicts(syn)
+	tc, del, xd, xdx := GetExperimentNetDicts(dictFiles)
 
 	// panic if any one of these dictionaries could not be built
 	if (xd == nil) || (del == nil) || (tc == nil) {
@@ -105,20 +204,24 @@ func BuildExperimentNet(syn map[string]string, useYAML bool, idCounter int, trac
 
 	NumIDs = idCounter
 
-	// populate topology data structures that enable reference to the structures just read in
-	createTopoReferences(tc, traceMgr)
+	// make sure the first calls to the rng build the u01 table for background traffic
+	bckgrndRNG := rngstream.New("bckgrnd")
+	u01List = make([]float64, numU01)
+	for idx:=0; idx<numU01; idx++ {
+		u01List[idx] = bckgrndRNG.RandU01()
+	}
 
 	// save as global to mrnes for tracing network execution
 	devTraceMgr = traceMgr
 
 	devExecTimeTbl = buildDevExecTimeTbl(del)
 
-	// update model experiment parameters
-	setModelParameters(xd, xdx)
+	SetTopoState(xd, xdx)
 
 	// see whether connections give fully connected graph or not
 	checkConnections(topoGraph)
 }
+*/
 
 // reorderExpParams is used to put the ExpParameter parameters in
 // an order such that the earlier elements in the order have broader
@@ -226,11 +329,32 @@ func reorderExpParams(pL []ExpParameter) []ExpParameter {
 	return wc
 }
 
-// setModelParameters takes the list of parameter configurations expressed in
+// SetModelState creates the state structures for the devices before initializing from configuration files
+func SetTopoState(expCfg, expxCfg *ExpCfg) {
+	for _, endpt := range EndptDevByID {
+		endpt.EndptState = createEndptState(endpt.EndptName)
+	}
+	for _, is := range IntrfcByID {
+		is.State = createIntrfcState()
+	}
+	for _, swtch := range SwitchDevByID {
+	    swtch.SwitchState = createSwitchState(swtch.SwitchName)
+	}
+	for _, router := range RouterDevByID {
+	    router.RouterState = createRouterState(router.RouterName)
+	}
+	for _, ns := range NetworkByID {
+		ns.NetState = createNetworkState(ns.Name)
+	}
+	SetTopoParameters(expCfg, expxCfg)
+	InitBckgrndFlowList()
+}
+
+// SetModelParameters takes the list of parameter configurations expressed in
 // ExpCfg form, turns its elements into configuration commands that may
 // initialize multiple objects, includes globally applicable assignments
 // and assign these in greatest-to-least application order
-func setModelParameters(expCfg, expxCfg *ExpCfg) {
+func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 	// this call initializes some maps used below
 	GetExpParamDesc()
 
@@ -260,6 +384,7 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 				vs = "1500"
 			case "trace":
 				vs = "false"
+
 			default:
 				vs = ""
 			}
@@ -366,7 +491,7 @@ func setModelParameters(expCfg, expxCfg *ExpCfg) {
 	}
 
 	endptList := []paramObj{}
-	for _, endpt := range endptDevByID {
+	for _, endpt := range EndptDevByID {
 		endptList = append(endptList, endpt)
 	}
 
@@ -475,7 +600,7 @@ var paramObjByName map[string]paramObj
 var RouterDevByID map[int]*routerDev
 var RouterDevByName map[string]*routerDev
 
-var endptDevByID map[int]*endptDev
+var EndptDevByID map[int]*endptDev
 var EndptDevByName map[string]*endptDev
 
 var SwitchDevByID map[int]*switchDev
@@ -502,7 +627,7 @@ func nxtID() int {
 
 // GetExperimentNetDicts accepts a map that holds the names of the input files used for the network part of an experiment
 // creates internal representations of the information they hold, and returns those structs.
-func GetExperimentNetDicts(syn map[string]string) (*TopoCfg, *DevExecList, *ExpCfg, *ExpCfg) {
+func GetExperimentNetDicts(dictFiles map[string]string) (*TopoCfg, *DevExecList, *ExpCfg, *ExpCfg) {
 	var tc *TopoCfg
 	var del *DevExecList
 	var xd, xdx *ExpCfg
@@ -514,28 +639,28 @@ func GetExperimentNetDicts(syn map[string]string) (*TopoCfg, *DevExecList, *ExpC
 
 	var useYAML bool
 
-	ext := path.Ext(syn["topo"])
+	ext := path.Ext(dictFiles["topo"])
 	useYAML = (ext == ".yaml") || (ext == ".yml")
 
-	tc, err = ReadTopoCfg(syn["topo"], useYAML, empty)
+	tc, err = ReadTopoCfg(dictFiles["topo"], useYAML, empty)
 	errs = append(errs, err)
 
-	ext = path.Ext(syn["devExec"])
+	ext = path.Ext(dictFiles["devExec"])
 	useYAML = (ext == ".yaml") || (ext == ".yml")
 
-	del, err = ReadDevExecList(syn["devExec"], useYAML, empty)
+	del, err = ReadDevExecList(dictFiles["devExec"], useYAML, empty)
 	errs = append(errs, err)
 
-	ext = path.Ext(syn["exp"])
+	ext = path.Ext(dictFiles["exp"])
 	useYAML = (ext == ".yaml") || (ext == ".yml")
 
-	xd, err = ReadExpCfg(syn["exp"], useYAML, empty)
+	xd, err = ReadExpCfg(dictFiles["exp"], useYAML, empty)
 	errs = append(errs, err)
 
-	if len(syn["mdfy"]) > 0 {
-		ext = path.Ext(syn["mdfy"])
+	if len(dictFiles["mdfy"]) > 0 {
+		ext = path.Ext(dictFiles["mdfy"])
 		useYAML = (ext == ".yaml") || (ext == ".yml")
-		xdx, err = ReadExpCfg(syn["mdfy"], useYAML, empty)
+		xdx, err = ReadExpCfg(dictFiles["mdfy"], useYAML, empty)
 		errs = append(errs, err)
 	}
 
@@ -581,7 +706,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	paramObjByID = make(map[int]paramObj)
 	paramObjByName = make(map[string]paramObj)
 
-	endptDevByID = make(map[int]*endptDev)
+	EndptDevByID = make(map[int]*endptDev)
 	EndptDevByName = make(map[string]*endptDev)
 
 	SwitchDevByID = make(map[int]*switchDev)
@@ -662,7 +787,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 
 		// for TopoDev interface
 		addTopoDevLookup(endptID, endptName, endptDev)
-		endptDevByID[endptID] = endptDev
+		EndptDevByID[endptID] = endptDev
 		EndptDevByName[endptName] = endptDev
 
 		// for paramObj interface
@@ -815,10 +940,15 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 				connected = true
 			}
 
-			if !connected && intrfc.Carry != nil && compatibleIntrfcs(intrfc, intrfc.Carry) {
-				peerID := intrfc.Carry.Device.DevID()
-				connectIds(topoGraph, devID, peerID, intrfc.Number, intrfc.Carry.Number)
-				connected = true
+			if !connected && len(intrfc.Carry) > 0 {
+				for _, cintrfc := range intrfc.Carry {
+					if compatibleIntrfcs(intrfc, cintrfc) {
+						peerID := cintrfc.Device.DevID()
+						connectIds(topoGraph, devID, peerID, intrfc.Number, cintrfc.Number)
+						connected = true
+						break
+					}
+				}
 			}
 
 			if !connected && len(intrfc.Wireless) > 0 {
@@ -837,7 +967,7 @@ func compatibleIntrfcs(intrfc1, intrfc2 *intrfcStruct) bool {
 	if intrfc1.Cable != nil && intrfc2.Cable != nil {
 		return true
 	}
-	return intrfc1.Carry != nil && intrfc2.Carry != nil
+	return len(intrfc1.Carry) >0  && len(intrfc2.Carry) > 0
 }
 
 // checkConnections checks the graph for full connectivity when the -chkc flag was set
@@ -901,3 +1031,47 @@ func addTopoDevLookup(tdID int, tdName string, td TopoDev) {
 	TopoDevByID[tdID] = td
 	TopoDevByName[tdName] = td
 }
+
+
+func InitializeBckgrndEndpt(evtMgr *evtm.EventManager, endptDev *endptDev) {
+	if !(endptDev.EndptState.BckgrndRate > 0.0) {
+		return	
+	}
+
+	ts  := endptDev.EndptSched
+
+	// only do this once
+	if ts.bckgrndOn {
+		return
+	}	
+
+	rho := endptDev.EndptState.BckgrndRate*endptDev.EndptState.BckgrndSrv
+
+	// compute the initial number of busy cores
+	busy := int(math.Round(float64(ts.cores)*rho))
+
+	// schedule the background task arrival process
+	u01 := u01List[endptDev.EndptState.BckgrndIdx]
+	endptDev.EndptState.BckgrndIdx = (endptDev.EndptState.BckgrndIdx+1)%numU01
+
+	arrival := -math.Log(1.0-u01)/endptDev.EndptState.BckgrndRate
+	evtMgr.Schedule(endptDev, nil, addBckgrnd, vrtime.SecondsToTime(arrival))
+
+	// set some cores busy
+	for idx:=0; idx<busy; idx++ {
+		ts.inBckgrnd += 1
+		u01 := u01List[endptDev.EndptState.BckgrndIdx]
+		endptDev.EndptState.BckgrndIdx = (endptDev.EndptState.BckgrndIdx+1)%numU01
+		service := -endptDev.EndptState.BckgrndSrv*math.Log(1.0-u01)
+		evtMgr.Schedule(endptDev, nil, rmBckgrnd, vrtime.SecondsToTime(service))
+	}
+	ts.bckgrndOn = true
+}
+
+
+func InitializeBckgrnd(evtMgr *evtm.EventManager) {
+	for _, endptDev := range EndptDevByName {
+		InitializeBckgrndEndpt(evtMgr, endptDev)
+	}
+}
+	

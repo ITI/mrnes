@@ -128,7 +128,7 @@ type NetTrace struct {
 	Ticks     int64   // ticks variable of time
 	Priority  int64   // priority field of time-stamp
 	FlowID    int    // integer identifier identifying the chain of traces this is part of
-	MinorID    int    // integer identifier identifying the chain of traces this is part of
+	ExecID    int
 	ConnectID int     // integer identifier of the network connection
 	ObjID     int     // integer id for object being referenced
 	Op        string  // "start", "stop", "enter", "exit"
@@ -154,6 +154,86 @@ func (ntr *NetTrace) Serialize() string {
 	return string(bytes[:])
 }
 
+type SchedulerTrace struct {
+	Time float64
+	ObjID int
+	ExecID int
+	Op string
+	Cores int
+	Inservice int
+	Inbckgrnd int
+	Waiting int
+}
+
+
+func (st *SchedulerTrace) Serialize() string {
+	var bytes []byte
+	var merr error
+
+	bytes, merr = yaml.Marshal(*st)
+
+	if merr != nil {
+		panic(merr)
+	}
+	return string(bytes[:])
+}
+
+type IntrfcTrace struct {
+	Time float64
+	ObjID int
+	ExecID int
+	Op string
+	CQ string
+}
+
+func (it *IntrfcTrace) Serialize() string {
+	var bytes []byte
+	var merr error
+
+	bytes, merr = yaml.Marshal(*it)
+
+	if merr != nil {
+		panic(merr)
+	}
+	return string(bytes[:])
+}
+
+func AddIntrfcTrace(tm *TraceManager, vrt vrtime.Time, execID, objID int, op, CQ string) {
+	it := new(IntrfcTrace)
+	it.Time = vrt.Seconds()
+	it.ExecID = execID
+	it.ObjID = objID
+	it.Op = op
+	it.CQ = CQ
+	itStr := it.Serialize()
+	strTime := strconv.FormatFloat(it.Time,'f', -1, 64)
+	trcInst := TraceInst{TraceTime: strTime, TraceType:"interface", TraceStr:itStr}
+	tm.AddTrace(vrt, execID, trcInst)
+}
+
+		
+func AddSchedulerTrace(tm *TraceManager, vrt vrtime.Time, ts *TaskScheduler, execID, objID int, op string) {
+	endpt := EndptDevByID[objID]
+	if !endpt.EndptState.Trace {
+		return
+	}
+
+	st := new(SchedulerTrace)
+	st.Time = vrt.Seconds()
+	st.ExecID = execID
+	st.ObjID = objID
+	st.Op = op
+	st.Cores = ts.cores
+	st.Inservice = len(ts.inservice)
+	st.Waiting = ts.priWaiting.Len()
+	st.Inbckgrnd = ts.inBckgrnd
+	stStr := st.Serialize()
+
+	traceTime := strconv.FormatFloat(vrt.Seconds(), 'f', -1, 64)
+	trcInst := TraceInst{TraceTime: traceTime, TraceType:"scheduler", TraceStr:stStr}
+	tm.AddTrace(vrt, st.ExecID, trcInst)
+}	
+
 // AddNetTrace creates a record of the trace using its calling arguments, and stores it
 func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, op string) {
 	ntr := new(NetTrace)
@@ -163,6 +243,7 @@ func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, o
 	ntr.ConnectID = nm.ConnectID
 	ntr.FlowID = nm.FlowID
 	ntr.ObjID = objID
+	ntr.ExecID = nm.ExecID
 	ntr.Op = op
 	ntr.PcktIdx = nm.PcktIdx
 	ntr.MsgType = nmtToStr[nm.NetMsgType]
@@ -171,6 +252,6 @@ func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, o
 	traceTime := strconv.FormatFloat(vrt.Seconds(), 'f', -1, 64)
 
 	trcInst := TraceInst{TraceTime: traceTime, TraceType:"network", TraceStr:ntrStr}
-	tm.AddTrace(vrt, ntr.FlowID, trcInst)
+	tm.AddTrace(vrt, ntr.ExecID, trcInst)
 }
 

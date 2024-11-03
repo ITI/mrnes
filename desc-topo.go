@@ -121,20 +121,38 @@ func (del *DevExecList) AddTiming(devOp, model string, execTime float64) {
 // to help create unique default names for these objects
 //
 //	Not currently used at initialization, see if useful for the simulation
-var numberOfIntrfcs int = 0
-var numberOfRouters int = 0
-var numberOfSwitches int = 0
-var numberOfEndpts int = 0
+var numberOfIntrfcs int 
+var numberOfRouters int 
+var numberOfSwitches int 
+var numberOfEndpts int 
 
 // maps that let you use a name to look up an object
-var objTypeByName map[string]string = make(map[string]string)
-var devByName map[string]NetDevice = make(map[string]NetDevice)
-var netByName map[string]*NetworkFrame = make(map[string]*NetworkFrame)
-var rtrByName map[string]*RouterFrame = make(map[string]*RouterFrame)
+var objTypeByName map[string]string 
+var devByName map[string]NetDevice 
+var netByName map[string]*NetworkFrame 
+var rtrByName map[string]*RouterFrame 
 
-// DevConnected gives for each NetDev device a list of the other NetDev devices
+// devConnected gives for each NetDev device a list of the other NetDev devices
 // it connects to through wired interfaces
-var DevConnected map[string][]string = make(map[string][]string)
+var devConnected map[string][]string 
+
+func InitTopoDesc() {
+	numberOfIntrfcs = 0
+	numberOfRouters = 0
+	numberOfSwitches = 0
+	numberOfEndpts = 0
+
+	// maps that let you use a name to look up an object
+	objTypeByName = make(map[string]string)
+	devByName = make(map[string]NetDevice)
+	netByName = make(map[string]*NetworkFrame)
+	rtrByName = make(map[string]*RouterFrame)
+
+	// devConnected gives for each NetDev device a list of the other NetDev devices
+	// it connects to through wired interfaces
+	devConnected = make(map[string][]string)
+}
+
 
 // To most easily serialize and deserialize the various structs involved in creating
 // and communicating a simulation model, we ensure that they are all completely
@@ -176,7 +194,7 @@ type IntrfcDesc struct {
 	Cable string `json:"cable" yaml:"cable"`
 
 	// name of interface (on a different device) to which this interface is directly (and singularly) carried if wired and not on Cable
-	Carry string `json:"carry" yaml:"carry"`
+	Carry []string `json:"carry" yaml:"carry"`
 
 	// list of names of interface (on a different device) to which this interface is connected through wireless
 	Wireless []string `json:"wireless" yaml:"wireless"`
@@ -208,7 +226,7 @@ type IntrfcFrame struct {
 
 	// pointer to interface (on a different device) to which this interface is directly if wired and not Cable.
 	// this interface and the one pointed to need to have media type "wired", and have "Cable" be empty
-	Carry *IntrfcFrame
+	Carry []*IntrfcFrame
 
 	// A wireless interface may connect to may devices, this slice points to those that can be reached
 	Wireless []*IntrfcFrame
@@ -232,8 +250,27 @@ func CableIntrfcFrames(intrfc1, intrfc2 *IntrfcFrame) {
 
 // CarryIntrfcFrames links two interfaces through their 'Cable' attributes
 func CarryIntrfcFrames(intrfc1, intrfc2 *IntrfcFrame) {
-	intrfc1.Carry = intrfc2
-	intrfc2.Carry = intrfc1
+	found := false
+	for _, carry := range intrfc1.Carry {
+		if carry.Name == intrfc2.Name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		intrfc1.Carry = append(intrfc1.Carry, intrfc2)
+	}
+
+	found = false
+	for _, carry := range intrfc2.Carry {
+		if carry.Name == intrfc1.Name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		intrfc2.Carry = append(intrfc2.Carry, intrfc1)
+	}
 }
 
 // CreateIntrfc is a constructor for [IntrfcFrame] that fills in most of the attributes except Cable.
@@ -303,6 +340,8 @@ func (ifcf *IntrfcFrame) Transform() IntrfcDesc {
 	intrfcDesc.MediaType = ifcf.MediaType
 	intrfcDesc.Faces = ifcf.Faces
 	intrfcDesc.Groups = ifcf.Groups
+	intrfcDesc.Carry = make([]string,0)
+	intrfcDesc.Wireless = make([]string,0)
 
 	// a IntrfcDesc defines its Cable field to be a string, which
 	// we set here to be the name of the interface the IntrfcFrame version
@@ -314,14 +353,9 @@ func (ifcf *IntrfcFrame) Transform() IntrfcDesc {
 	// a IntrfcDesc defines its Carry field to be a string, which
 	// we set here to be the name of the interface the IntrfcFrame version
 	// points to
-	if ifcf.Carry != nil {
-		intrfcDesc.Carry = ifcf.Carry.Name
+	for _, carry := range ifcf.Carry {
+		intrfcDesc.Carry = append(intrfcDesc.Carry, carry.Name)
 	}
-
-	// a IntrfcDesc defines its Wireless slice to be a slice of strings, which
-	// we set here to be the name of the interface the IntrfcFrame version
-	// points to
-	intrfcDesc.Wireless = make([]string, 0)
 
 	for _, connection := range ifcf.Wireless {
 		intrfcDesc.Wireless = append(intrfcDesc.Wireless, connection.Name)
@@ -330,15 +364,15 @@ func (ifcf *IntrfcFrame) Transform() IntrfcDesc {
 	return *intrfcDesc
 }
 
-// IsConnected is part of a set of functions and data structures useful in managing
+// isConnected is part of a set of functions and data structures useful in managing
 // construction of a communication network. It indicates whether two devices whose
 // identities are given are already connected through their interfaces, by Cable, Carry, or Wireless
-func IsConnected(id1, id2 string) bool {
-	_, present := DevConnected[id1]
+func isConnected(id1, id2 string) bool {
+	_, present := devConnected[id1]
 	if !present {
 		return false
 	}
-	for _, peerID := range DevConnected[id1] {
+	for _, peerID := range devConnected[id1] {
 		if peerID == id2 {
 			return true
 		}
@@ -347,42 +381,63 @@ func IsConnected(id1, id2 string) bool {
 	return false
 }
 
-// MarkConnected modifes the DevConnected data structure to reflect that
+// MarkConnected modifes the devConnected data structure to reflect that
 // the devices whose identities are the arguments have been connected.
-func MarkConnected(id1, id2 string) {
+func markConnected(id1, id2 string) {
 	// if already connected there is nothing to do here
-	if IsConnected(id1, id2) {
+	if isConnected(id1, id2) {
 		return
 	}
 
 	// for both devices, add their names to the 'connected to' list of the other
 
-	// complete the data structure for DevConnected[id1][id2] if need be
-	_, present := DevConnected[id1]
+	// complete the data structure for devConnected[id1][id2] if need be
+	_, present := devConnected[id1]
 	if !present {
-		DevConnected[id1] = []string{}
+		devConnected[id1] = []string{}
 	}
 
-	DevConnected[id1] = append(DevConnected[id1], id2)
+	devConnected[id1] = append(devConnected[id1], id2)
 
-	// complete the data structure for DevConnected[id2][id1] if need be
-	_, present = DevConnected[id2]
+	// complete the data structure for devConnected[id2][id1] if need be
+	_, present = devConnected[id2]
 	if !present {
-		DevConnected[id2] = []string{}
+		devConnected[id2] = []string{}
 	}
-	DevConnected[id2] = append(DevConnected[id2], id1)
+	devConnected[id2] = append(devConnected[id2], id1)
 }
+
+// determine whether intrfc1 is in intrfc2's Carry slice and  
+// vice versa
+func carryConnected(intrfc1, intrfc2 *IntrfcFrame) bool {
+
+	if !carryConnected(intrfc1, intrfc2) {
+		return false
+	}
+	return carryConnected(intrfc2, intrfc1)
+}
+
+// determine whether intrfc1 is in the Carry slice of intrfc2
+func carryContained(intrfc1, intrfc2 *IntrfcFrame) bool {
+	for _, intrfc := range intrfc2.Carry {
+		if intrfc == intrfc1 || intrfc.Name == intrfc1.Name {
+			return true
+		}
+	}
+	return false
+}
+
 
 // ConnectDevs establishes a 'cabled' or 'carry' connection (creating interfaces if needed) between
 // devices dev1 and dev2 (recall that NetDevice is an interface satisified by Endpt, Router, Switch)
 func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 	// if already connected we don't do anything
-	if IsConnected(dev1.DevID(), dev2.DevID()) {
+	if isConnected(dev1.DevID(), dev2.DevID()) {
 		return
 	}
 
 	// this call will record the connection
-	MarkConnected(dev1.DevID(), dev2.DevID())
+	markConnected(dev1.DevID(), dev2.DevID())
 
 	// ensure that both devices are known to the network
 	net := netByName[faces]
@@ -407,27 +462,39 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 
 	// check whether the connection requested exists already or we can complete it
 	// without creating new interfaces
-	for _, intrfc1 := range intrfcs1 {
-		for _, intrfc2 := range intrfcs2 {
-			if cable && intrfc1.Cable != nil && intrfc1.Cable != intrfc2 {
-				continue
-			}
-			if !cable && intrfc1.Carry != nil && intrfc1.Carry != intrfc2 {
-				continue
-			}
 
-			// either intrfc1.cable is nil or intrfc is connected already to intrfc2.
-			// so then if intrfc2.cable is nil or is connected to intrfc1 we can complete the connection and leave
-			if cable && (intrfc2.Cable == intrfc1 || intrfc2.Cable == nil) {
-				intrfc1.Cable = intrfc2
-				intrfc2.Cable = intrfc1
-				return
+	if cable {
+		for _, intrfc1 := range intrfcs1 {
+			for _, intrfc2 := range intrfcs2 {
+
+				// keep looping if we're looking for cable and they don't match
+				if cable && intrfc1.Cable != nil && intrfc1.Cable != intrfc2 {
+					continue
+				}
+
+				// either intrfc1.cable is nil or intrfc is connected already to intrfc2.
+				// so then if intrfc2.cable is nil or is connected to intrfc1 we can complete the connection and leave
+				if cable && (intrfc2.Cable == intrfc1 || intrfc2.Cable == nil) {
+					intrfc1.Cable = intrfc2
+					intrfc2.Cable = intrfc1
+					return
+				}
 			}
-			// check whether a 'carry' connection already exists between intrfc1 and intrfc2
-			if !cable && (intrfc2.Carry == intrfc1 || intrfc1.Carry == intrfc2) {
-				intrfc1.Carry = intrfc2
-				intrfc2.Carry = intrfc1
-				return
+		}
+	} else {
+		// see whether we can establish the connection without new interfaces
+		for _, intrfc1 := range intrfcs1 {
+			for _, intrfc2 := range intrfcs2 {
+				if carryContained(intrfc1, intrfc2) && !carryContained(intrfc2, intrfc1) {
+					// put intrfc2 in intrfc1's Carry slice
+					intrfc2.Carry = append(intrfc2.Carry, intrfc1)
+					return
+				}
+				if carryContained(intrfc2, intrfc1) && !carryContained(intrfc1, intrfc2) {
+					// put intrfc1 in intrfc2's Carry slice
+					intrfc1.Carry = append(intrfc1.Carry, intrfc1)
+					return
+				}
 			}
 		}
 	}
@@ -440,15 +507,13 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 
 	// check dev1's interfaces
 	for _, intrfc1 := range intrfcs1 {
-		if cable && intrfc1.Faces == faces && intrfc1.Cable == nil {
+		// we're looking to cable, the interface is facing the right network,
+		// and it's cabling is empty
+		if intrfc1.Faces == faces && intrfc1.Cable == nil {
 			free1 = intrfc1
 			break
 		}
-		if !cable && intrfc1.Faces == faces && intrfc1.Carry == nil {
-			free1 = intrfc1
-			break
-		}
-	}
+	}	
 
 	// if dev1 does not have a free interface, create one
 	if free1 == nil {
@@ -459,11 +524,7 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 
 	// check dev2's interfaces
 	for _, intrfc2 := range intrfcs2 {
-		if cable && intrfc2.Faces == faces && intrfc2.Cable == nil {
-			free2 = intrfc2
-			break
-		}
-		if !cable && intrfc2.Faces == faces && intrfc2.Carry == nil {
+		if intrfc2.Faces == faces && intrfc2.Cable == nil {
 			free2 = intrfc2
 			break
 		}
@@ -481,19 +542,25 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 		free1.Cable = free2
 		free2.Cable = free1
 	} else {
-		free1.Carry = free2
-		free2.Carry = free1
+		free1.Carry = append(free1.Carry, free2)
+		free2.Carry = append(free2.Carry, free1)
 	}
 }
 
-// WirelessConnectTo establishes a wireless connection (creating interfaces if needed) between
-// a hub and a device
-func (rf *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) {
+// WirelessConnectTo establishes a wireless connection (creating interfaces if needed) 
+// between a hub and a device
+func (rf *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) error {
 	// ensure that both devices are known to the network
-
 	net := netByName[faces]
-	net.IncludeDev(rf, "wireless", true)
-	net.IncludeDev(dev, "wireless", true)
+	err := net.IncludeDev(rf, "wireless", true)
+	if err != nil {
+		return err
+	}
+
+	err = net.IncludeDev(dev, "wireless", true)
+	if err != nil {
+		return err
+	}
 
 	// ensure that hub has wireless interface facing the named network
 	var hubIntrfc *IntrfcFrame
@@ -555,6 +622,7 @@ func (rf *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) {
 	if !hubKnown {
 		devIntrfc.Wireless = append(devIntrfc.Wireless, hubIntrfc)
 	}
+	return nil
 }
 
 // A NetworkFrame holds the attributes of a network during the model construction phase
@@ -645,20 +713,26 @@ func DevNetworks(dev NetDevice) string {
 }
 
 // IncludeDev makes sure that the network device being offered
-//
 //	a) has an interface facing the network
 //	b) is included in the network's list of those kind of devices
-func (nf *NetworkFrame) IncludeDev(dev NetDevice, intrfcType string, chkIntrfc bool) {
+func (nf *NetworkFrame) IncludeDev(dev NetDevice, mediaType string, chkIntrfc bool) error {
 	devName := dev.DevName()
 	devType := dev.DevType()
 
 	var intrfc *IntrfcFrame
 
+	// check consistency of network media type and mediaType argument.
+	// If mediaType is wireless then network must be wireless.   It is
+	// permitted though to have the network be wireless and the mediaType be wired.
+	if mediaType == "wireless" && !(nf.MediaType == "wireless") {
+		return fmt.Errorf("including a wireless device in a wired network")
+	}
+
 	// if the device does not have an interface pointed at the network, make one
 	if chkIntrfc && !nf.FacedBy(dev) {
 		// create the interface
 		intrfcName := DefaultIntrfcName(dev.DevName())
-		intrfc = CreateIntrfc(devName, intrfcName, devType, intrfcType, nf.Name)
+		intrfc = CreateIntrfc(devName, intrfcName, devType, mediaType, nf.Name)
 	}
 
 	// add it to the right list in the network
@@ -668,7 +742,7 @@ func (nf *NetworkFrame) IncludeDev(dev NetDevice, intrfcType string, chkIntrfc b
 		if intrfc != nil {
 			endpt.Interfaces = append(endpt.Interfaces, intrfc)
 		}
-		if !EndptPresent(nf.Endpts, endpt) {
+		if !endptPresent(nf.Endpts, endpt) {
 			nf.Endpts = append(nf.Endpts, endpt)
 		}
 	case "Router":
@@ -676,7 +750,7 @@ func (nf *NetworkFrame) IncludeDev(dev NetDevice, intrfcType string, chkIntrfc b
 		if intrfc != nil {
 			rtr.Interfaces = append(rtr.Interfaces, intrfc)
 		}
-		if !RouterPresent(nf.Routers, rtr) {
+		if !routerPresent(nf.Routers, rtr) {
 			nf.Routers = append(nf.Routers, rtr)
 		}
 
@@ -685,34 +759,44 @@ func (nf *NetworkFrame) IncludeDev(dev NetDevice, intrfcType string, chkIntrfc b
 		if intrfc != nil {
 			swtch.Interfaces = append(swtch.Interfaces, intrfc)
 		}
-		if !SwitchPresent(nf.Switches, swtch) {
+		if !switchPresent(nf.Switches, swtch) {
 			nf.Switches = append(nf.Switches, swtch)
 		}
 	}
+	return nil
 }
 
 // AddRouter includes the argument router into the network,
-// throws an error if already present
-func (nf *NetworkFrame) AddRouter(rtrf *RouterFrame) {
+func (nf *NetworkFrame) AddRouter(rtrf *RouterFrame) error {
 	// check whether a router with this same name already exists here
 	for _, rtr := range nf.Routers {
 		if rtr.Name == rtrf.Name {
-			return
+			return nil
 		}
 	}
+	if !nf.FacedBy(rtrf) {
+		return fmt.Errorf("attempting to add router %s to network %s without prior association of an interface", rtrf.Name, nf.Name)
+	}
+
 	nf.Routers = append(nf.Routers, rtrf)
+	return nil
 }
 
 // AddSwitch includes the argument router into the network,
 // throws an error if already present
-func (nf *NetworkFrame) AddSwitch(swtch *SwitchFrame) {
+func (nf *NetworkFrame) AddSwitch(swtch *SwitchFrame) error {
 	// check whether a router with this same name already exists here
 	for _, nfswtch := range nf.Switches {
 		if nfswtch.Name == swtch.Name {
-			return
-		}
+			return nil
+		} 
 	}
+	if !nf.FacedBy(swtch) {
+		return fmt.Errorf("attempting to add switch %s to network %s without prior association of an interface", swtch.Name, nf.Name)
+	}
+
 	nf.Switches = append(nf.Switches, swtch)
+	return nil
 }
 
 // Transform converts a network frame into a network description.
@@ -793,16 +877,10 @@ func CreateRouter(name, model string) *RouterFrame {
 	return rtr
 }
 
-func CreateBrouter(name, model string) *RouterFrame {
-	brtr := CreateRouter(name, model)
-	brtr.AddGroup("Brouter")
-	return brtr
-}
-
-// RouterPresent returns a boolean flag indicating whether
+// routerPresent returns a boolean flag indicating whether
 // a router provided as input exists already in a list of routers
 // also provided as input
-func RouterPresent(rtrList []*RouterFrame, rtr *RouterFrame) bool {
+func routerPresent(rtrList []*RouterFrame, rtr *RouterFrame) bool {
 	for _, rtrInList := range rtrList {
 		if rtrInList.Name == rtr.Name {
 			return true
@@ -966,10 +1044,10 @@ func (sf *SwitchFrame) AddGroup(groupName string) {
 	}
 }
 
-// SwitchPresent returns a boolean flag indicating whether
+// switchPresent returns a boolean flag indicating whether
 // a switch provided as input exists already in a list of switches
 // also provided as input
-func SwitchPresent(swtchList []*SwitchFrame, swtch *SwitchFrame) bool {
+func switchPresent(swtchList []*SwitchFrame, swtch *SwitchFrame) bool {
 	for _, swtchInList := range swtchList {
 		if swtchInList.Name == swtch.Name {
 			return true
@@ -1038,46 +1116,46 @@ type EndptFrame struct {
 }
 
 // DefaultEndptName returns unique name for a endpt
-func DefaultEndptName(name string) string {
-	return fmt.Sprintf("endpt(%s).(%d)", name, numberOfEndpts)
+func DefaultEndptName(etype string) string {
+	return fmt.Sprintf("%s-endpt.(%d)", etype, numberOfEndpts)
 }
 
 // CreateHost is a constructor.  It creates an endpoint frame that sets the Host flag
 func CreateHost(name, model string, cores int) *EndptFrame {
-	host := CreateEndpt(name, model, cores)
+	host := CreateEndpt(name, "Host", model, cores)
 	host.AddGroup("Host")
 	return host
 }
 
 // CreateNode is a constructor.  It creates an endpoint frame, does not mark with Host, Server, or EUD 
 func CreateNode(name, model string, cores int) *EndptFrame {
-	return CreateEndpt(name, model, cores)
+	return CreateEndpt(name, "Node", model, cores)
 }
 
 // CreateSensor is a constructor.  
 func CreateSensor(name, model string) *EndptFrame {
-	sensor := CreateEndpt(name, model, 1)
+	sensor := CreateEndpt(name, "Sensor", model, 1)
 	sensor.AddGroup("Sensor")
 	return sensor
 }
 
 // CreateSrvr is a constructor.  It creates an endpoint frame and marks it as a server
 func CreateSrvr(name, model string, cores int) *EndptFrame {
-	endpt := CreateEndpt(name, model, cores)
+	endpt := CreateEndpt(name, "Srvr", model, cores)
 	endpt.AddGroup("Server")
 	return endpt
 }
 
 // CreateEUD is a constructor.  It creates an endpoint frame with the EUD flag set to true
 func CreateEUD(name, model string, cores int) *EndptFrame {
-	epf := CreateEndpt(name, model, cores)
+	epf := CreateEndpt(name, "EUD", model, cores)
 	epf.AddGroup("EUD")
 	return epf
 }
 
 // CreateEndpt is a constructor. It saves (or creates) the endpt name, and saves
 // the optional endpt type (which has use in run-time configuration)
-func CreateEndpt(name, model string, cores int) *EndptFrame {
+func CreateEndpt(name, etype string, model string, cores int) *EndptFrame {
 	epf := new(EndptFrame)
 	numberOfEndpts += 1
 
@@ -1086,7 +1164,7 @@ func CreateEndpt(name, model string, cores int) *EndptFrame {
 
 	// get a (presumeably unique) string name
 	if len(name) == 0 {
-		name = DefaultEndptName(name)
+		name = DefaultEndptName(etype)
 	}
 	epf.Name = name
 	objTypeByName[name] = "Endpt" // from name get type of object, here, "Endpt"
@@ -1177,9 +1255,9 @@ func (epf *EndptFrame) AddGroup(groupName string) {
 	}
 }
 
-// EndptPresent returns a boolean flag indicating whether an endpoint frame given as an argument
+// endptPresent returns a boolean flag indicating whether an endpoint frame given as an argument
 // exists already in a list of endpoint frames given as another argument
-func EndptPresent(endptList []*EndptFrame, endpt *EndptFrame) bool {
+func endptPresent(endptList []*EndptFrame, endpt *EndptFrame) bool {
 	for _, endptInList := range endptList {
 		if endptInList.Name == endpt.Name {
 			return true
@@ -1274,12 +1352,13 @@ func CreateTopoCfgFrame(name string) TopoCfgFrame {
 	TF.Networks = make([]*NetworkFrame, 0)
 	TF.Routers = make([]*RouterFrame, 0)
 	TF.Switches = make([]*SwitchFrame, 0)
+	InitTopoDesc()
 	return *TF
 }
 
-// AddEndpt adds a Endpt to the topology configuration (if it is not already present).
+// addEndpt adds a Endpt to the topology configuration (if it is not already present).
 // Does not create an interface
-func (tf *TopoCfgFrame) AddEndpt(endpt *EndptFrame) {
+func (tf *TopoCfgFrame) addEndpt(endpt *EndptFrame) {
 	// test for duplicatation either by address or by name
 	inputName := endpt.Name
 	for _, stored := range tf.Endpts {
@@ -1304,8 +1383,8 @@ func (tf *TopoCfgFrame) AddNetwork(net *NetworkFrame) {
 	tf.Networks = append(tf.Networks, net)
 }
 
-// AddRouter adds a Router to the topology configuration (if it is not already present)
-func (tf *TopoCfgFrame) AddRouter(rtr *RouterFrame) {
+// addRouter adds a Router to the topology configuration (if it is not already present)
+func (tf *TopoCfgFrame) addRouter(rtr *RouterFrame) {
 	// ignore if router is already present. Comparison by address or by name
 	inputName := rtr.Name
 	for _, stored := range tf.Routers {
@@ -1317,8 +1396,8 @@ func (tf *TopoCfgFrame) AddRouter(rtr *RouterFrame) {
 	tf.Routers = append(tf.Routers, rtr)
 }
 
-// AddSwitch adds a switch to the topology configuration (if it is not already present)
-func (tf *TopoCfgFrame) AddSwitch(swtch *SwitchFrame) {
+// addSwitch adds a switch to the topology configuration (if it is not already present)
+func (tf *TopoCfgFrame) addSwitch(swtch *SwitchFrame) {
 	// ignore if switch is already present. Comparison by address or by name
 	inputName := swtch.Name
 	for _, stored := range tf.Switches {
@@ -1348,13 +1427,13 @@ func (tf *TopoCfgFrame) Consolidate() error {
 		// net.Consolidate()
 
 		for _, rtr := range net.Routers {
-			tf.AddRouter(rtr)
+			tf.addRouter(rtr)
 		}
 		for _, endpt := range net.Endpts {
-			tf.AddEndpt(endpt)
+			tf.addEndpt(endpt)
 		}
 		for _, swtch := range net.Switches {
-			tf.AddSwitch(swtch)
+			tf.addSwitch(swtch)
 		}
 	}
 

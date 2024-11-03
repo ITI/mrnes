@@ -65,12 +65,19 @@ func ShowPath(src int, dest int, idToName map[int]string, thru map[int]int,
 // the gNodes data structure implements a graph representation of the MrNesbits network
 // in a form that lets us use the graph module.
 // gNodes[i] refers to the MrNesbits network device with id i
-var gNodes map[int]simple.Node = make(map[int]simple.Node)
+var gNodes map[int]simple.Node 
+
+// cachedSP saves the resultof computing shortest-path trees.
+// The key is the device id of the path source, the value is the graph/path representation of the tree
+var cachedSP map[int]path.Shortest 
 
 // buildconnGraph returns a graph.Graph data structure built from
 // a MrNesbits representation of a node id and a list of node ids of
 // network devices it connects to.
 func buildconnGraph(edges map[int][]int) graph.Graph {
+	gNodes = make(map[int]simple.Node)
+	cachedSP = make(map[int]path.Shortest)
+	connGraphBuilt = false
 	connGraph := simple.NewWeightedUndirectedGraph(0, math.Inf(1))
 	for nodeID := range edges {
 		_, present := gNodes[nodeID]
@@ -97,14 +104,10 @@ func buildconnGraph(edges map[int][]int) graph.Graph {
 	return connGraph
 }
 
-// cachedSP saves the resultof computing shortest-path trees.
-// The key is the device id of the path source, the value is the graph/path representation of the tree
-var cachedSP map[int]path.Shortest = make(map[int]path.Shortest)
 
 // getSPTree returns the shortest path tree rooted in input argument 'from' from
 // tree 'connGraph'.  If the tree is found in the cache it is returned, if not it is computed, saved, and returned.
 func getSPTree(from int, connGraph graph.Graph) path.Shortest {
-
 	// look for existence of tree already
 	spTree, present := cachedSP[from]
 	if present {
@@ -136,7 +139,7 @@ func convertNodeSeq(nsQ []graph.Node) []int {
 
 // connGraphBuilt is a flag which is initialized to false but is set true
 // once the connection graph is constructed.
-var connGraphBuilt bool = false
+var connGraphBuilt bool 
 
 // connGraph is the path/graph representation of the mrnes network graph
 var connGraph graph.Graph

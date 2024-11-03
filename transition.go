@@ -15,9 +15,7 @@ import (
 // Traffic is tagged as discrete or flow
 type ConnType int
 const (
-	_ = iota
 	FlowConn ConnType = iota
-	Reservation
 	DiscreteConn
 )
 
@@ -131,6 +129,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	flowID := IDs.FlowID
 	connectID := IDs.ConnectID
 	classID := IDs.ClassID
+	execID  := IDs.ExecID
 	
 	// if connectID>0 make sure that an entry in np.Connections exists
 	_, present := np.Connections[connectID]
@@ -227,6 +226,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		nm.ConnectID = connectID
 		nm.FlowID = flowID
 		nm.ClassID = classID
+		nm.ExecID  = execID
 		nm.Connection = *connDesc
 		nm.PcktIdx = fmNumber
 		nm.NumPckts = numFrames
@@ -917,7 +917,7 @@ func (np *NetworkPortal) SendImmediate(evtMgr *evtm.EventManager, nm *NetworkMsg
 	// schedule exit from final interface after msg passes through
 	ingressIntrfcID := (*nm.Route)[len(*nm.Route)-1].dstIntrfcID
 	ingressIntrfc := IntrfcByID[ingressIntrfcID]
-	evtMgr.Schedule(ingressIntrfc, *nm, exitIngressIntrfc, vrtime.SecondsToTime(0.0))
+	evtMgr.Schedule(ingressIntrfc, *nm, arriveIngressIntrfc, vrtime.SecondsToTime(0.0))
 }
 
 // PlaceNetMsg schedules the receipt of the message some deterministic time in the future,
@@ -935,7 +935,7 @@ func (np *NetworkPortal) PlaceNetMsg(evtMgr *evtm.EventManager, nm *NetworkMsg, 
 	nm.StepIdx = len((*nm.Route))-1
 
 	// schedule exit from final interface after msg passes through
-	evtMgr.Schedule(ingressIntrfc, *nm, exitIngressIntrfc, vrtime.SecondsToTime(latency+offset))
+	evtMgr.Schedule(ingressIntrfc, *nm, arriveIngressIntrfc, vrtime.SecondsToTime(latency+offset))
 	return
 }
 
@@ -966,11 +966,11 @@ func (np *NetworkPortal) ComputeFlowLatency(nm *NetworkMsg) float64 {
 	for idx:=0; idx< len((*route)); idx++ {
 		rtStep := (*route)[idx]
 		srcIntrfc := IntrfcByID[rtStep.srcIntrfcID]
-		cg := srcIntrfc.State.ClassQueue[classID]
+		cg := srcIntrfc.State.priQueue.getClassQueue(classID, true)
 		latency += (cg.waiting + msgLen/srcIntrfc.State.Bndwdth)
 
 		dstIntrfc := IntrfcByID[rtStep.dstIntrfcID]
-		cg = dstIntrfc.State.ClassQueue[classID]
+		cg = dstIntrfc.State.priQueue.getClassQueue(classID, false)
 		latency += (cg.waiting + msgLen/dstIntrfc.State.Bndwdth)
 
 		net := srcIntrfc.Faces
@@ -1020,5 +1020,4 @@ func EstMD1Latency(rho float64, msgLen int, bndwdth float64) float64 {
 	denom := 2*mu*(1.0-rho)
 	return imu + rho/denom
 }
-
 
