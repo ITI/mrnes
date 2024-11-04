@@ -335,17 +335,17 @@ func SetTopoState(expCfg, expxCfg *ExpCfg) {
 	for _, endpt := range EndptDevByID {
 		endpt.EndptState = createEndptState(endpt.EndptName)
 	}
-	for _, is := range IntrfcByID {
+	for _, is := range intrfcByID {
 		is.State = createIntrfcState()
 	}
-	for _, swtch := range SwitchDevByID {
-	    swtch.SwitchState = createSwitchState(swtch.SwitchName)
+	for _, swtch := range switchDevByID {
+	    swtch.switchState = createSwitchState(swtch.switchName)
 	}
-	for _, router := range RouterDevByID {
-	    router.RouterState = createRouterState(router.RouterName)
+	for _, router := range routerDevByID {
+	    router.routerState = createRouterState(router.routerName)
 	}
-	for _, ns := range NetworkByID {
-		ns.NetState = createNetworkState(ns.Name)
+	for _, ns := range networkByID {
+		ns.netState = createNetworkState(ns.name)
 	}
 	SetTopoParameters(expCfg, expxCfg)
 	InitBckgrndFlowList()
@@ -785,11 +785,10 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 		// create a runtime representation from its desc representation
 		endptDev := createEndptDev(&endpt)
 		endptDev.initTaskScheduler()
-		endptDev.initCryptoScheduler()
 
 		// get name and id
-		endptName := endptDev.endptName
-		endptID := endptDev.endptID
+		endptName := endptDev.EndptName
+		endptID := endptDev.EndptID
 
 		// for topoDev interface
 		addTopoDevLookup(endptID, endptName, endptDev)
@@ -829,15 +828,15 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 			is := createIntrfcStruct(&intrfc)
 
 			// save is for reference by id or name
-			intrfcByID[is.number] = is
+			intrfcByID[is.Number] = is
 			intrfcByName[intrfc.Name] = is
 
 			// for paramObj interface
-			paramObjByID[is.number] = is
+			paramObjByID[is.Number] = is
 			paramObjByName[intrfc.Name] = is
 
 			// store id -> name for trace
-			tm.AddName(is.number, intrfc.Name, "interface")
+			tm.AddName(is.Number, intrfc.Name, "interface")
 
 			rtr := routerDevByName[rtrDesc.Name]
 			rtr.addIntrfc(is)
@@ -850,14 +849,14 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 			is := createIntrfcStruct(&intrfc)
 
 			// save is for reference by id or name
-			intrfcByID[is.number] = is
+			intrfcByID[is.Number] = is
 			intrfcByName[intrfc.Name] = is
 
 			// store id -> name for trace
-			tm.AddName(is.number, intrfc.Name, "interface")
+			tm.AddName(is.Number, intrfc.Name, "interface")
 
 			// for paramObj interface
-			paramObjByID[is.number] = is
+			paramObjByID[is.Number] = is
 			paramObjByName[intrfc.Name] = is
 
 			// look up endpting endpt, use not from endpt's desc representation
@@ -872,14 +871,14 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 			is := createIntrfcStruct(&intrfc)
 
 			// save is for reference by id or name
-			intrfcByID[is.number] = is
+			intrfcByID[is.Number] = is
 			intrfcByName[intrfc.Name] = is
 
 			// store id -> name for trace
-			tm.AddName(is.number, intrfc.Name, "interface")
+			tm.AddName(is.Number, intrfc.Name, "interface")
 
 			// for paramObj interface
-			paramObjByID[is.number] = is
+			paramObjByID[is.Number] = is
 			paramObjByName[intrfc.Name] = is
 
 			// look up endpting switch, using switch name from desc
@@ -938,11 +937,11 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	// put all the connections recorded in the Cabled and Wireless fields into the topoGraph
 	for _, dev := range topoDevByID {
 		devID := dev.DevID()
-		for _, intrfc := range dev.devIntrfcs() {
+		for _, intrfc := range dev.DevIntrfcs() {
 			connected := false
-			if intrfc.cable != nil && compatibleIntrfcs(intrfc, intrfc.cable) {
-				peerID := intrfc.cable.device.DevID()
-				connectIds(topoGraph, devID, peerID, intrfc.number, intrfc.cable.number)
+			if intrfc.Cable != nil && compatibleIntrfcs(intrfc, intrfc.Cable) {
+				peerID := intrfc.Cable.Device.DevID()
+				connectIds(topoGraph, devID, peerID, intrfc.Number, intrfc.Cable.Number)
 				connected = true
 			}
 
@@ -957,10 +956,10 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 				}
 			}
 
-			if !connected && len(intrfc.wireless) > 0 {
-				for _, conn := range intrfc.wireless {
-					peerID := conn.device.DevID()
-					connectIds(topoGraph, devID, peerID, intrfc.number, conn.number)
+			if !connected && len(intrfc.Wireless) > 0 {
+				for _, conn := range intrfc.Wireless {
+					peerID := conn.Device.DevID()
+					connectIds(topoGraph, devID, peerID, intrfc.Number, conn.Number)
 				}
 			}
 		}
@@ -968,9 +967,9 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 }
 
 // compatibleIntrfcs checks whether the named pair of interfaces are compatible
-// w.r.t. their state on cable, carry, and wireless
+// w.r.t. their state on Cable, Carry, and wireless
 func compatibleIntrfcs(intrfc1, intrfc2 *intrfcStruct) bool {
-	if intrfc1.cable != nil && intrfc2.cable != nil {
+	if intrfc1.Cable != nil && intrfc2.Cable != nil {
 		return true
 	}
 	return len(intrfc1.Carry) >0  && len(intrfc2.Carry) > 0
@@ -982,12 +981,12 @@ func checkConnections(tg map[int][]int) bool {
 	untouched := make(map[int][]int)
 
 	for srcID, dev := range topoDevByID {
-		srcType := dev.devType()
+		srcType := dev.DevType()
 		if srcType != endptCode {
 			continue
 		}
 		for dstID := range topoDevByID {
-			dstType := dev.devType()
+			dstType := dev.DevType()
 			if dstType != endptCode {
 				continue
 			}
@@ -1009,11 +1008,11 @@ func checkConnections(tg map[int][]int) bool {
 	}
 	for srcID, missed := range untouched {
 		srcDev := topoDevByID[srcID]
-		srcName := srcDev.devName()
+		srcName := srcDev.DevName()
 		mlist := []string{}
 		for _, dstID := range missed {
 			dstDev := topoDevByID[dstID]
-			mlist = append(mlist, dstDev.devName())
+			mlist = append(mlist, dstDev.DevName())
 		}
 		fmt.Printf("missing paths from %s to %s\n", srcName, strings.Join(mlist, ","))
 	}

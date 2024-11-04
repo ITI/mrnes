@@ -306,7 +306,7 @@ func getRouteStepIntrfcs(srcID, dstID int) (int, int) {
 	if !present {
 		intrfcs, present = routeStepIntrfcs[intPair{j: srcID, i: dstID}]
 		if !present {
-			panic(fmt.Errorf("no step between %s and %s", topoDevByID[srcID].devName(), topoDevByID[dstID].devName()))
+			panic(fmt.Errorf("no step between %s and %s", topoDevByID[srcID].DevName(), topoDevByID[dstID].DevName()))
 		}
 		return intrfcs.j, intrfcs.i
 	}
@@ -333,7 +333,7 @@ type NetworkPortal struct {
 
 // ActivePortal remembers the most recent NetworkPortal created
 // (there should be only one call to CreateNetworkPortal...)
-var activePortal *NetworkPortal
+var ActivePortal *NetworkPortal
 
 type ActiveRec struct {
 	Number int
@@ -344,8 +344,8 @@ type ActiveRec struct {
 // of two network simulation modes to use, passes a flag indicating whether
 // packets should be passed whole, and writes the NetworkPortal pointer into a global variable
 func CreateNetworkPortal() *NetworkPortal {
-	if activePortal != nil {
-		return activePortal
+	if ActivePortal != nil {
+		return ActivePortal
 	}
 	np := new(NetworkPortal)
 
@@ -399,7 +399,7 @@ func (np *NetworkPortal) ClearRmFlow(flowID int) {
 func (np *NetworkPortal) EndptCPUModel(devName string) string {
 	endpt, present := EndptDevByName[devName]
 	if present {
-		return endpt.endptModel
+		return endpt.EndptModel
 	}
 	return ""
 }
@@ -407,7 +407,7 @@ func (np *NetworkPortal) EndptCPUModel(devName string) string {
 func (np *NetworkPortal) EndptBckgrndDrag(devName string) float64 {
 	endpt, present := EndptDevByName[devName]
 	if present {
-		return endpt.endptState.cpudrag
+		return endpt.EndptState.cpudrag
 	}
 	return 1.0
 }
@@ -525,7 +525,7 @@ func (np *NetworkPortal) Arrive(rtns RtnDescs, frames int) int {
 // lostConnection is called when a connection is lost by the network layer.
 // The response is to remove the connection from the portal's table, and
 // call the event handler passed in to deal with lost connections
-func (np *NetworkPortal) lostConnection(evtMgr *evtm.EventManager, nm *networkMsg, connectID int) {
+func (np *NetworkPortal) lostConnection(evtMgr *evtm.EventManager, nm *NetworkMsg, connectID int) {
 	_, present := np.returnTo[connectID]
 	if !present {
 		return
@@ -548,13 +548,13 @@ func (np *NetworkPortal) lostConnection(evtMgr *evtm.EventManager, nm *networkMs
 // DevCode is the base type for an enumerated type of network devices
 type DevCode int
 const (
-	endptCode devCode = iota
+	endptCode DevCode = iota
 	switchCode
 	routerCode
 	unknownCode
 )
 
-// DevCodefromStr returns the devCode corresponding to an string name for it
+// DevCodefromStr returns the DevCode corresponding to an string name for it
 func DevCodeFromStr(code string) DevCode {
 	switch code {
 	case "Endpt", "endpt":
@@ -568,7 +568,7 @@ func DevCodeFromStr(code string) DevCode {
 	}
 }
 
-// DevCodeToStr returns a string corresponding to an input devCode for it
+// DevCodeToStr returns a string corresponding to an input DevCode for it
 func DevCodeToStr(code DevCode) string {
 	switch code {
 	case endptCode:
@@ -587,7 +587,7 @@ func DevCodeToStr(code DevCode) string {
 // NetworkScale is the base type for an enumerated type of network type descriptions
 type NetworkScale int
 const (
-	LAN networkScale = iota
+	LAN NetworkScale = iota
 	WAN
 	T3
 	T2
@@ -595,8 +595,8 @@ const (
 	GeneralNet
 )
 
-// netScaleFromStr returns the networkScale corresponding to an string name for it
-func netScaleFromStr(netScale string) networkScale {
+// netScaleFromStr returns the NetworkScale corresponding to an string name for it
+func netScaleFromStr(netScale string) NetworkScale {
 	switch netScale {
 	case "LAN":
 		return LAN
@@ -613,7 +613,7 @@ func netScaleFromStr(netScale string) networkScale {
 	}
 }
 
-// NetScaleToStr returns a string name that corresponds to an input networkScale
+// NetScaleToStr returns a string name that corresponds to an input RetworkScale
 func NetScaleToStr(ntype NetworkScale) string {
 	switch ntype {
 	case LAN:
@@ -636,13 +636,13 @@ func NetScaleToStr(ntype NetworkScale) string {
 // networkMedia is the base type for an enumerated type of comm network media
 type NetworkMedia int
 const (
-	wired networkMedia = iota
+	wired NetworkMedia = iota
 	wireless
 	unknownMedia
 )
 
-// netMediaFromStr returns the networkMedia type corresponding to the input string name
-func netMediaFromStr(media string) networkMedia {
+// netMediaFromStr returns the RetworkMedia type corresponding to the input string name
+func netMediaFromStr(media string) NetworkMedia {
 	switch media {
 	case "Wired", "wired":
 		return wired
@@ -665,9 +665,9 @@ type DFS map[int]intrfcIDPair
 
 // the topDev interface specifies the functionality different device types provide
 type topoDev interface {
-	devName() string              // every device has a unique name
+	DevName() string              // every device has a unique name
 	DevID() int                   // every device has a unique integer id
-	DevType() DevCode             // every device is one of the devCode types
+	DevType() DevCode             // every device is one of the DevCode types
 	DevIntrfcs() []*intrfcStruct  // we can get from devices a list of the interfaces they endpt, if any
 	DevDelay(any) float64         // every device can be be queried for the delay it introduces for an operation
 	DevState() any                // every device as a structure of state that can be accessed
@@ -695,7 +695,7 @@ type intrfcStruct struct {
 	Number   int             // unique integer id, probably generated automatically
 	DevType  DevCode         // device code of the device holding the interface
 	Media    NetworkMedia    // media of the network the interface interacts with
-	Device   TopoDev         // pointer to the device holding the interface
+	Device   topoDev         // pointer to the device holding the interface
 	PrmDev   paramObj        // pointer to the device holding the interface as a paramObj
 	Cable    *intrfcStruct   // For a wired interface, points to the "other" interface in the connection
 	Carry    []*intrfcStruct   // points to the "other" interface in a connection
@@ -943,9 +943,9 @@ func (intrfc *intrfcStruct) matchParam(attrbName, attrbValue string) bool {
 	case "media":
 		return netMediaFromStr(attrbValue) == intrfc.media
 	case "devtype":
-		return devCodeToStr(intrfc.device.devType()) == attrbValue
+		return DevCodeToStr(intrfc.device.devType()) == attrbValue
 	case "devname":
-		return intrfc.device.devName() == attrbValue
+		return intrfc.device.DevName() == attrbValue
 	}
 
 	// an error really, as we should match only the names given in the switch statement above
@@ -1114,7 +1114,6 @@ func (intrfc *intrfcStruct) RmFlow(flowID int, classID int, rate float64, ingres
 		oldRate := cg.egressLambda
 		cg.egressLambda = oldRate-rate
 	}
->>>>>>> chgflow
 }
 
 // A networkStruct holds the attributes of one of the model's communication subnetworks
@@ -1122,8 +1121,8 @@ type networkStruct struct {
 	name        string        // unique name
 	groups      []string      // list of groups to which network belongs
 	number      int           // unique integer id
-	netScale    networkScale  // type, e.g., LAN, WAN, etc.
-	netMedia    networkMedia  // communication fabric, e.g., wired, wireless
+	netScale    NetworkScale  // type, e.g., LAN, WAN, etc.
+	netMedia    NetworkMedia  // communication fabric, e.g., wired, wireless
 	netRouters  []*routerDev  // list of pointers to routerDevs with interfaces that face this subnetwork
 	netSwitches []*switchDev  // list of pointers to routerDevs with interfaces that face this subnetwork
 	netEndpts   []*endptDev   // list of pointers to routerDevs with interfaces that face this subnetwork
@@ -1470,7 +1469,7 @@ func (endpt *endptDev) matchParam(attrbName, attrbValue string) bool {
 	case "group":
 		return slices.Contains(endpt.endptGroups, attrbValue)
 	case "model":
-		return endpt.endptModel == attrbValue
+		return endpt.EndptModel == attrbValue
 	}
 
 	// an error really, as we should match only the names given in the switch statement above
@@ -1544,7 +1543,7 @@ func (endpt *endptDev) addIntrfc(intrfc *intrfcStruct) {
 
 // CPUModel returns the string type description of the CPU model running the endpt
 func (endpt *endptDev) CPUModel() string {
-	return endpt.endptModel
+	return endpt.EndptModel
 }
 
 // DevName returns the endpt name, as part of the TopoDev interface
@@ -1576,7 +1575,7 @@ func (endpt *endptDev) DevForward() DFS {
 	return endpt.EndptState.Forward
 }
 
-// devRng returns the endpt's rng pointer, as part of the TopoDev interface
+// DevRng returns the endpt's rng pointer, as part of the TopoDev interface
 func (endpt *endptDev) DevRng() *rngstream.RngStream {
 	return endpt.EndptState.Rngstrm
 }
@@ -1588,19 +1587,19 @@ func (endpt *endptDev) LogNetEvent(time vrtime.Time, nm *NetworkMsg, op string) 
 	AddNetTrace(devTraceMgr, time, nm, endpt.EndptID, op)
 }
 
-// devAddActive adds an active connection, as part of the topoDev interface.  Not used for endpts, yet
-func (endpt *endptDev) devAddActive(nme *networkMsg) {
+// DevAddActive adds an active connection, as part of the topoDev interface.  Not used for endpts, yet
+func (endpt *endptDev) DevAddActive(nme *NetworkMsg) {
 	endpt.endptState.active[nme.connectID] = nme.rate
 }
 
-// devRmActive removes an active connection, as part of the topoDev interface.  Not used for endpts, yet
-func (endpt *endptDev) devRmActive(connectID int) {
+// DevRmActive removes an active connection, as part of the topoDev interface.  Not used for endpts, yet
+func (endpt *endptDev) DevRmActive(connectID int) {
 	delete(endpt.endptState.active, connectID)
 }
 
 // devDelay returns the state-dependent delay for passage through the device, as part of the topoDev interface.
 // Not really applicable to endpt, so zero is returned
-func (endpt *endptDev) devDelay(arg any) float64 {
+func (endpt *endptDev) DevDelay(arg any) float64 {
 	return 0.0
 }
 
@@ -1743,12 +1742,12 @@ func (swtch *switchDev) DevRng() *rngstream.RngStream {
 }
 
 // devAddActive adds a connection id to the list of active connections through the switch, as part of the topoDev interface
-func (swtch *switchDev) devAddActive(nme *networkMsg) {
+func (swtch *switchDev) DevAddActive(nme *NetworkMsg) {
 	swtch.switchState.active[nme.connectID] = nme.rate
 }
 
-// devRmActive removes a connection id to the list of active connections through the switch, as part of the topoDev interface
-func (swtch *switchDev) devRmActive(connectID int) {
+// DevRmActive removes a connection id to the list of active connections through the switch, as part of the topoDev interface
+func (swtch *switchDev) DevRmActive(connectID int) {
 	delete(swtch.switchState.active, connectID)
 }
 
@@ -1912,7 +1911,7 @@ func (router *routerDev) LogNetEvent(time vrtime.Time, nm *NetworkMsg, op string
 }
 
 // devAddActive includes a connectID as part of what is active at the device, as part of the topoDev interface
-func (router *routerDev) devAddActive(nme *networkMsg) {
+func (router *routerDev) DevAddActive(nme *NetworkMsg) {
 	router.routerState.active[nme.connectID] = nme.rate
 }
 
@@ -1935,7 +1934,7 @@ type intrfcsToDev struct {
 	devID       int // id of the device the connection targets
 }
 
-// The networkMsg type creates a wrapper for a message between comp pattern funcs.
+// The NetworkMsg type creates a wrapper for a message between comp pattern funcs.
 // One value (stepIdx) indexes into a list of route steps, so that by incrementing
 // we can find 'the next' step in the route.  One value is a pointer to this route list,
 // and the final value is a pointe to an inter-func comp pattern message.
@@ -1970,10 +1969,10 @@ func pt2ptLatency(srcIntrfc, dstIntrfc *intrfcStruct) float64 {
 }
 
 // currentIntrfcs returns pointers to the source and destination interfaces whose
-// id values are carried in the current step of the route followed by the input argument networkMsg.
+// id values are carried in the current step of the route followed by the input argument NetworkMsg.
 // If the interfaces are not directly connected but communicate through a network,
 // a pointer to that network is returned also
-func currentIntrfcs(nm *networkMsg) (*intrfcStruct, *intrfcStruct, *networkStruct) {
+func currentIntrfcs(nm *NetworkMsg) (*intrfcStruct, *intrfcStruct, *networkStruct) {
 	srcIntrfcID := (*nm.route)[nm.stepIdx].srcIntrfcID
 	dstIntrfcID := (*nm.route)[nm.stepIdx].dstIntrfcID
 
@@ -1992,11 +1991,11 @@ func currentIntrfcs(nm *networkMsg) (*intrfcStruct, *intrfcStruct, *networkStruc
 }
 
 // transitDelay returns the length of time (in seconds) taken
-// by the input argument networkMsg to traverse the current step in the route it follows.
+// by the input argument NetworkMsg to traverse the current step in the route it follows.
 // That step may be a point-to-point wired connection, or may be transition through a network
 // w/o specification of passage through specific devices. In addition a pointer to the
 // network transited (if any) is returned
-func transitDelay(nm *networkMsg) (float64, *networkStruct) {
+func transitDelay(nm *NetworkMsg) (float64, *networkStruct) {
 	var delay float64
 
 	// recover the interfaces themselves and the network between them, if any
