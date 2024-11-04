@@ -207,14 +207,14 @@ type rtEndpts struct {
 
 // commonNetID checks that intrfcA and intrfcB point at the same network and returns its name
 func commonNetID(intrfcA, intrfcB *intrfcStruct) int {
-	if intrfcA.faces == nil || intrfcB.faces == nil {
+	if intrfcA.Faces == nil || intrfcB.Faces == nil {
 		panic("interface on route fails to face any network")
 	}
 
-	if intrfcA.faces.name != intrfcB.faces.name {
+	if intrfcA.Faces.Name != intrfcB.Faces.Name {
 		panic("interfaces on route do not face the same network")
 	}
-	return intrfcA.faces.number
+	return intrfcA.Faces.Number
 }
 
 // intrfcsBetween computes identify of the interfaces between routeSteps rsA and rsB
@@ -258,12 +258,12 @@ func findRoute(srcID, dstID int) *[]intrfcsToDev {
 
 		// if there is a network between the previous route device and devID, identify it
 		networkID := -1
-		dstIntrfc := intrfcByID[dstIntrfcID]
+		dstIntrfc := IntrfcByID[dstIntrfcID]
 
 		// if 'cable' is nil we're pointing through a network and
 		// use its id
-		if dstIntrfc.cable == nil {
-			networkID = dstIntrfc.faces.number
+		if dstIntrfc.Cable == nil {
+			networkID = dstIntrfc.Faces.Number
 		}
 
 		istp := intrfcsToDev{srcIntrfcID: srcIntrfcID, dstIntrfcID: dstIntrfcID, netID: networkID, devID: devID}

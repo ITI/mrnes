@@ -465,12 +465,12 @@ func GetExpParamDesc() ([]string, map[string][]string, map[string][]string) {
 		ExpAttributes = make(map[string][]string)
 		ExpAttributes["Switch"] = []string{"name", "group", "model", "*"}
 		ExpAttributes["Router"] = []string{"name", "group", "model", "*"}
-		ExpAttributes["Endpt"] = []string{"name", "model", "group", "cpudrag", "*"}
+		ExpAttributes["Endpt"] = []string{"name", "model", "group", "*"}
 		ExpAttributes["Interface"] = []string{"name", "group", "devtype", "devname", "media", "network", "*"}
 		ExpAttributes["Network"] = []string{"name", "group", "media", "scale", "*"}
 		ExpParams = make(map[string][]string)
-		ExpParams["Switch"] = []string{"model", "buffer", "trace"}
-		ExpParams["Router"] = []string{"model", "buffer", "trace"}
+		ExpParams["Switch"] = []string{"buffer", "trace"}
+		ExpParams["Router"] = []string{"buffer", "trace"}
 		ExpParams["Endpt"] = []string{"trace", "model", "bckgrndRate",  "bckgrndSrv"}
 		ExpParams["Network"] = []string{"latency", "bandwidth", "bckgrndBW", "capacity", "drop", "trace"}
 		ExpParams["Interface"] = []string{"latency", "delay", "buffer", "bandwidth", 

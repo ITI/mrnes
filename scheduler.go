@@ -91,12 +91,6 @@ type TaskScheduler struct {
 	inservice reqSrvHeap  // manage work being served concurrently
 }
 
-// CryptoScheduler holds data structures supporting the multi-core scheduling of crypto operations
-type CryptoScheduler struct {
-	EncryptScheduler *TaskScheduler
-	DecryptScheduler *TaskScheduler
-}
-
 // CreateTaskScheduler is a constructor
 func CreateTaskScheduler(cores int) *TaskScheduler {
 	ts := new(TaskScheduler)
@@ -107,15 +101,6 @@ func CreateTaskScheduler(cores int) *TaskScheduler {
 	heap.Init(&ts.priWaiting)
 	return ts
 }
-
-// CreateCryptoScheduler is a constructor
-func CreateCryptoScheduler(cores int) *CryptoScheduler {
-	cs := new(CryptoScheduler)
-	cs.EncryptScheduler = CreateTaskScheduler(cores/2)
-	cs.DecryptScheduler = CreateTaskScheduler(cores/2)
-	return cs
-}
-
 
 // Schedule puts a piece of work either in queue to be done, or in service.  Parameters are
 // - op : a code for the type of work being done
@@ -158,7 +143,6 @@ func (ts *TaskScheduler) joinQueue(evtMgr *evtm.EventManager, task *Task) bool {
 		execute = task.req
 		finished = true
 	}
-
 	// schedule event handler for when this timeslice completes
 	evtMgr.Schedule(ts, finished, timeSliceComplete, vrtime.SecondsToTime(execute))
 
