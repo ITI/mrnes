@@ -19,11 +19,17 @@ The latency between devices in a wireless network is based on a configuration pa
 
 The model for end-to-end bandwidth of a flow is based on the observation that long-term, the bandwidth observed by the flow destination is defined by some bottleneck: source, device, network, or interface along the path.   The mrnes model for estimating bandwidth between two hosts looks at all of the connections that make up its path, each of which has a maximum bandwidth, and computes the flow’s bandwidth as the minimum of all these.
 
-The package currently has three files
+The package currently has nine go files
+* desc-topo.go  implements an API for defining, creating, and reading mrnes topologies.
+* flow.go has functions for introducing background flows into a mrnes model.
 * mrnes.go has functions for transforming input files that describe a network topology into a run-time representation of that topology.  It provides an interface for a program that builds a simulation model, and an interface for an application traffic generator.
+* net.go  holds the event-oriented logic for moving a message between devices
 * route.go provides the logic for computing and storing the end-to-end routes followed by messages
 * net.go  holds the event-oriented logic for moving a message between devices
-* desc-topo.go  implements an API for defining, creating, and reading mrnes topologies.
+* param.go holds code and data structures for applying experiment parameter settings.
+* scheduler.go holds code and data structures for the model of scheduling cores operating concurrently on parallel tasks.
+* trace.go supports the gathering and reporting of run-time traces.
+* transition.go implements an API for an application layer that generates traffic and uses mrnes to transport it through a model of a network.
 
 
 Copyright 2024 Board of Trustees of the University of Illinois.

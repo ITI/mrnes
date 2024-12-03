@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +23,7 @@ type DevExecDesc struct {
 	DevOp    string  `json:"devop" yaml:"devop"`
 	Model    string  `json:"model" yaml:"model"`
 	ExecTime float64 `json:"exectime" yaml:"exectime"`
+	PerByte  float64 `json:"perbyte" yaml:"perbyte"`
 }
 
 // A DevExecList holds a map (Times) whose key is the operation
@@ -107,12 +109,12 @@ func ReadDevExecList(filename string, useYAML bool, dict []byte) (*DevExecList, 
 }
 
 // AddTiming takes the parameters of a DevExecDesc, creates one, and adds it to the FuncExecList
-func (del *DevExecList) AddTiming(devOp, model string, execTime float64) {
+func (del *DevExecList) AddTiming(devOp, model string, execTime, perbyte float64) {
 	_, present := del.Times[devOp]
 	if !present {
 		del.Times[devOp] = make([]DevExecDesc, 0)
 	}
-	del.Times[devOp] = append(del.Times[devOp], DevExecDesc{Model: model, DevOp: devOp, ExecTime: execTime})
+	del.Times[devOp] = append(del.Times[devOp], DevExecDesc{Model: model, DevOp: devOp, ExecTime: execTime, PerByte: perbyte})
 }
 
 // numberOfIntrfcs (and more generally, numberOf{Objects}
@@ -121,20 +123,20 @@ func (del *DevExecList) AddTiming(devOp, model string, execTime float64) {
 // to help create unique default names for these objects
 //
 //	Not currently used at initialization, see if useful for the simulation
-var numberOfIntrfcs int 
-var numberOfRouters int 
-var numberOfSwitches int 
-var numberOfEndpts int 
+var numberOfIntrfcs int
+var numberOfRouters int
+var numberOfSwitches int
+var numberOfEndpts int
 
 // maps that let you use a name to look up an object
-var objTypeByName map[string]string 
-var devByName map[string]NetDevice 
-var netByName map[string]*NetworkFrame 
-var rtrByName map[string]*RouterFrame 
+var objTypeByName map[string]string
+var devByName map[string]NetDevice
+var netByName map[string]*NetworkFrame
+var rtrByName map[string]*RouterFrame
 
 // devConnected gives for each NetDev device a list of the other NetDev devices
 // it connects to through wired interfaces
-var devConnected map[string][]string 
+var devConnected map[string][]string
 
 func InitTopoDesc() {
 	numberOfIntrfcs = 0
@@ -152,7 +154,6 @@ func InitTopoDesc() {
 	// it connects to through wired interfaces
 	devConnected = make(map[string][]string)
 }
-
 
 // To most easily serialize and deserialize the various structs involved in creating
 // and communicating a simulation model, we ensure that they are all completely
@@ -340,8 +341,8 @@ func (ifcf *IntrfcFrame) Transform() IntrfcDesc {
 	intrfcDesc.MediaType = ifcf.MediaType
 	intrfcDesc.Faces = ifcf.Faces
 	intrfcDesc.Groups = ifcf.Groups
-	intrfcDesc.Carry = make([]string,0)
-	intrfcDesc.Wireless = make([]string,0)
+	intrfcDesc.Carry = make([]string, 0)
+	intrfcDesc.Wireless = make([]string, 0)
 
 	// a IntrfcDesc defines its Cable field to be a string, which
 	// we set here to be the name of the interface the IntrfcFrame version
@@ -407,14 +408,14 @@ func markConnected(id1, id2 string) {
 	devConnected[id2] = append(devConnected[id2], id1)
 }
 
-// determine whether intrfc1 is in intrfc2's Carry slice and  
+// determine whether intrfc1 is in intrfc2's Carry slice and
 // vice versa
 func carryConnected(intrfc1, intrfc2 *IntrfcFrame) bool {
 
-	if !carryConnected(intrfc1, intrfc2) {
+	if !carryContained(intrfc1, intrfc2) {
 		return false
 	}
-	return carryConnected(intrfc2, intrfc1)
+	return carryContained(intrfc2, intrfc1)
 }
 
 // determine whether intrfc1 is in the Carry slice of intrfc2
@@ -426,7 +427,6 @@ func carryContained(intrfc1, intrfc2 *IntrfcFrame) bool {
 	}
 	return false
 }
-
 
 // ConnectDevs establishes a 'cabled' or 'carry' connection (creating interfaces if needed) between
 // devices dev1 and dev2 (recall that NetDevice is an interface satisified by Endpt, Router, Switch)
@@ -513,7 +513,7 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 			free1 = intrfc1
 			break
 		}
-	}	
+	}
 
 	// if dev1 does not have a free interface, create one
 	if free1 == nil {
@@ -547,7 +547,7 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 	}
 }
 
-// WirelessConnectTo establishes a wireless connection (creating interfaces if needed) 
+// WirelessConnectTo establishes a wireless connection (creating interfaces if needed)
 // between a hub and a device
 func (rf *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) error {
 	// ensure that both devices are known to the network
@@ -713,6 +713,7 @@ func DevNetworks(dev NetDevice) string {
 }
 
 // IncludeDev makes sure that the network device being offered
+//
 //	a) has an interface facing the network
 //	b) is included in the network's list of those kind of devices
 func (nf *NetworkFrame) IncludeDev(dev NetDevice, mediaType string, chkIntrfc bool) error {
@@ -789,7 +790,7 @@ func (nf *NetworkFrame) AddSwitch(swtch *SwitchFrame) error {
 	for _, nfswtch := range nf.Switches {
 		if nfswtch.Name == swtch.Name {
 			return nil
-		} 
+		}
 	}
 	if !nf.FacedBy(swtch) {
 		return fmt.Errorf("attempting to add switch %s to network %s without prior association of an interface", swtch.Name, nf.Name)
@@ -839,6 +840,9 @@ type RouterDesc struct {
 
 	// Model is an attribute like "Cisco 6400". Used primarily in run-time configuration
 	Model string `json:"model" yaml:"model"`
+
+	// use simple timing
+	Simple int `json:"simple" yaml:"simple"`
 
 	// list of names interfaces that describe the ports of the router
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
@@ -963,6 +967,7 @@ type SwitchDesc struct {
 	Name       string       `json:"name" yaml:"name"`
 	Groups     []string     `json:"groups" yaml:"groups"`
 	Model      string       `json:"model" yaml:"model"`
+	Simple     int          `json:"simple" yaml:"simple"`
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
 
@@ -1005,7 +1010,7 @@ func CreateHub(name, model string) *SwitchFrame {
 	return hub
 }
 
-// CreateHub constructs a switch frame tagged as being a hub
+// CreateBridge constructs a switch frame tagged as being a hub
 func CreateBridge(name, model string) *SwitchFrame {
 	bridge := CreateSwitch(name, model)
 	bridge.AddGroup("Bridge")
@@ -1099,11 +1104,12 @@ func (sf *SwitchFrame) Transform() SwitchDesc {
 
 // EndptDesc defines serializable representation of an endpoint .
 type EndptDesc struct {
-	Name       string       `json:"name" yaml:"name"`
-	Groups     []string     `json:"groups" yaml:"groups"`
-	Model      string       `json:"model" yaml:"model"`
-	Cores      int          `json:"cores" yaml:"cores"`
-	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
+	Name       string            `json:"name" yaml:"name"`
+	Groups     []string          `json:"groups" yaml:"groups"`
+	Model      string            `json:"model" yaml:"model"`
+	Cores      int               `json:"cores" yaml:"cores"`
+	Accel      map[string]string `json:"accel" yaml:"accel"`
+	Interfaces []IntrfcDesc      `json:"interfaces" yaml:"interfaces"`
 }
 
 // EndptFrame defines pre-serialization representation of a Endpt
@@ -1112,6 +1118,7 @@ type EndptFrame struct {
 	Groups     []string
 	Model      string
 	Cores      int
+	Accel      map[string]string
 	Interfaces []*IntrfcFrame // list of interfaces that describe the networks the endpt connects to
 }
 
@@ -1127,12 +1134,12 @@ func CreateHost(name, model string, cores int) *EndptFrame {
 	return host
 }
 
-// CreateNode is a constructor.  It creates an endpoint frame, does not mark with Host, Server, or EUD 
+// CreateNode is a constructor.  It creates an endpoint frame, does not mark with Host, Server, or EUD
 func CreateNode(name, model string, cores int) *EndptFrame {
 	return CreateEndpt(name, "Node", model, cores)
 }
 
-// CreateSensor is a constructor.  
+// CreateSensor is a constructor.
 func CreateSensor(name, model string) *EndptFrame {
 	sensor := CreateEndpt(name, "Sensor", model, 1)
 	sensor.AddGroup("Sensor")
@@ -1162,6 +1169,8 @@ func CreateEndpt(name, etype string, model string, cores int) *EndptFrame {
 	epf.Model = model
 	epf.Cores = cores
 
+	epf.Accel = make(map[string]string)
+
 	// get a (presumeably unique) string name
 	if len(name) == 0 {
 		name = DefaultEndptName(etype)
@@ -1181,8 +1190,14 @@ func (epf *EndptFrame) Transform() EndptDesc {
 	hd := new(EndptDesc)
 	hd.Name = epf.Name
 	hd.Model = epf.Model
-	hd.Groups = epf.Groups
+	hd.Groups = make([]string, len(epf.Groups))
+	copy(hd.Groups, epf.Groups)
+
 	hd.Cores = epf.Cores
+	hd.Accel = make(map[string]string)
+	for key, value := range epf.Accel {
+		hd.Accel[key] = value
+	}
 
 	// serialize the interfaces by calling the interface transformation function
 	hd.Interfaces = make([]IntrfcDesc, len(epf.Interfaces))
@@ -1208,8 +1223,17 @@ func (epf *EndptFrame) AddIntrfc(iff *IntrfcFrame) error {
 
 	// save the interface
 	epf.Interfaces = append(epf.Interfaces, iff)
-
 	return nil
+}
+
+// AddAccel includes the name of an accelerator PIC in the Endpoint, including a core
+// count if greater than 1
+func (epf *EndptFrame) AddAccel(name string, model string, cores int) {
+	accelName := name
+	if cores > 1 {
+		accelName += ("," + strconv.Itoa(cores))
+	}
+	epf.Accel[accelName] = model
 }
 
 // SetEUD includes EUD into the group list
@@ -1219,7 +1243,7 @@ func (epf *EndptFrame) SetEUD() {
 
 // IsEUD indicates whether EUD is in the group list
 func (epf *EndptFrame) IsEUD() bool {
-	return slices.Contains(epf.Groups, "EUD") 
+	return slices.Contains(epf.Groups, "EUD")
 }
 
 // SetHost includes Host into the group list
@@ -1229,7 +1253,7 @@ func (epf *EndptFrame) SetHost() {
 
 // IsHost indicates whether Host is in the group list
 func (epf *EndptFrame) IsHost() bool {
-	return slices.Contains(epf.Groups, "Host") 
+	return slices.Contains(epf.Groups, "Host")
 }
 
 // SetSrvr adds Server to the endpoint groups list
@@ -1239,7 +1263,7 @@ func (epf *EndptFrame) SetSrvr() {
 
 // IsSrvr indicates whether Server is in the endpoint groups list
 func (epf *EndptFrame) IsSrvr() bool {
-	return slices.Contains(epf.Groups, "Server") 
+	return slices.Contains(epf.Groups, "Server")
 }
 
 // SetCores records in the endpoint frame the number of cores the model assumes are available
@@ -1581,7 +1605,7 @@ func ReadTopoCfgDict(topoCfgDictFileName string, useYAML bool, dict []byte) (*To
 			msg := fmt.Sprintf("topology dict %s does not exist or cannot be read", topoCfgDictFileName)
 			fmt.Println(msg)
 
-			return nil, fmt.Errorf(msg)
+			return nil, errors.New(msg)
 		}
 		dict, err = os.ReadFile(topoCfgDictFileName)
 		if err != nil {
@@ -1654,7 +1678,7 @@ func ReadTopoCfg(topoFileName string, useYAML bool, dict []byte) (*TopoCfg, erro
 			msg := fmt.Sprintf("topology %s does not exist or cannot be read", topoFileName)
 			fmt.Println(msg)
 
-			return nil, fmt.Errorf(msg)
+			return nil, errors.New(msg)
 		}
 		dict, err = os.ReadFile(topoFileName)
 		if err != nil {

@@ -19,13 +19,13 @@ import (
 
 // Task describes the service requirements of an operation on a msg
 type Task struct {
-	OpType       string                    // what operation is being performed
-	arrive		 float64				   // time of task arrival
-	req          float64                   // required service
-	key			 float64				   // key used for heap ordering
-	pri		     float64				   // priority, the larger the number the greater the priority
-	timeslice    float64                   // timeslice
-	execID	     int
+	OpType       string  // what operation is being performed
+	arrive       float64 // time of task arrival
+	req          float64 // required service
+	key          float64 // key used for heap ordering
+	pri          float64 // priority, the larger the number the greater the priority
+	timeslice    float64 // timeslice
+	execID       int
 	devID        int
 	completeFunc evtm.EventHandlerFunction // call when finished
 	context      any                       // remember this from caller, to return when finished
@@ -36,19 +36,19 @@ type Task struct {
 var nxtTaskIdx int = 0
 
 // createTask is a constructor
-func createTask(op string, arrive, req, pri, timeslice float64, msg any, context any, 
-		execID, devID int, complete evtm.EventHandlerFunction) *Task {
+func createTask(op string, arrive, req, pri, timeslice float64, msg any, context any,
+	execID, devID int, complete evtm.EventHandlerFunction) *Task {
 
 	nxtTaskIdx += 1
 
-	// if priority is zero, add 1.0	
+	// if priority is zero, add 1.0
 	if !(pri > 0.0) {
-		return &Task{OpType: op, arrive: arrive, req: req, pri: 1.0, 
+		return &Task{OpType: op, arrive: arrive, req: req, pri: 1.0,
 			timeslice: timeslice, Msg: msg, context: context, execID: execID,
 			devID: devID, completeFunc: complete}
-	} 
-	return &Task{OpType: op, req: req, pri: pri, timeslice: timeslice, Msg: msg, context: context, 
-		execID: execID,  devID: devID, completeFunc: complete}
+	}
+	return &Task{OpType: op, req: req, pri: pri, timeslice: timeslice, Msg: msg, context: context,
+		execID: execID, devID: devID, completeFunc: complete}
 }
 
 // reqSrvHeap and its methods implement a min-priority heap
@@ -56,7 +56,7 @@ func createTask(op string, arrive, req, pri, timeslice float64, msg any, context
 type reqSrvHeap []*Task
 
 func (h reqSrvHeap) Len() int           { return len(h) }
-func (h reqSrvHeap) Less(i, j int) bool { return h[i].key < h[j].key }  // key is set by the heap 
+func (h reqSrvHeap) Less(i, j int) bool { return h[i].key < h[j].key } // key is set by the heap
 func (h reqSrvHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *reqSrvHeap) Push(x any) {
@@ -82,13 +82,13 @@ func (h *reqSrvHeap) Pop() any {
 
 // TaskScheduler holds data structures supporting the multi-core scheduling
 type TaskScheduler struct {
-	cores     int         // number of computational cores
-	inBckgrnd int		  // number of cores being used for background traffic
-	bckgrndOn bool		  // set to true when background processing is in use
-	ts        float64     // default timeslice for cores
-	waiting   []*Task     // work to do, not in service
+	cores      int        // number of computational cores
+	inBckgrnd  int        // number of cores being used for background traffic
+	bckgrndOn  bool       // set to true when background processing is in use
+	ts         float64    // default timeslice for cores
+	waiting    []*Task    // work to do, not in service
 	priWaiting reqSrvHeap // manage work being served concurrently
-	inservice reqSrvHeap  // manage work being served concurrently
+	inservice  reqSrvHeap // manage work being served concurrently
 }
 
 // CreateTaskScheduler is a constructor
@@ -109,10 +109,10 @@ func CreateTaskScheduler(cores int) *TaskScheduler {
 // - msg : the message being processed
 // - complete : an event handler to be called when the task has completed
 // The return is true if the 'task is finished' event was scheduled.
-func (ts *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, pri, timeslice float64, 
+func (ts *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, pri, timeslice float64,
 	context any, msg any, execID, objID int, complete evtm.EventHandlerFunction) bool {
 
-	AddSchedulerTrace(devTraceMgr, evtMgr.CurrentTime(), ts, execID, objID, "schedule["+op+"]") 
+	AddSchedulerTrace(devTraceMgr, evtMgr.CurrentTime(), ts, execID, objID, "schedule["+op+"]")
 
 	// create the Task, and remember it
 	now := evtMgr.CurrentSeconds()
@@ -130,9 +130,9 @@ func (ts *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, pri
 func (ts *TaskScheduler) joinQueue(evtMgr *evtm.EventManager, task *Task) bool {
 	// if all the cores are busy, put in the waiting queue and return
 
-	if ts.cores <= ts.inservice.Len() + ts.inBckgrnd {
+	if ts.cores <= ts.inservice.Len()+ts.inBckgrnd {
 		now := evtMgr.CurrentSeconds()
-		task.key = 1.0/(math.Pow(now-task.arrive,0.5)*task.pri)
+		task.key = 1.0 / (math.Pow(now-task.arrive, 0.5) * task.pri)
 		heap.Push(&ts.priWaiting, task)
 		return false
 	}
@@ -152,7 +152,7 @@ func (ts *TaskScheduler) joinQueue(evtMgr *evtm.EventManager, task *Task) bool {
 	}
 
 	task.req = math.Max(task.req-task.timeslice, 0.0)
-	task.key = task.req				// least time first
+	task.key = task.req // least time first
 	heap.Push(&ts.inservice, task)
 	return finished
 }
@@ -167,7 +167,7 @@ func timeSliceComplete(evtMgr *evtm.EventManager, context any, data any) any {
 	taskAny := heap.Pop(&ts.inservice)
 	task := taskAny.(*Task)
 
-	AddSchedulerTrace(devTraceMgr, evtMgr.CurrentTime(), ts, task.execID, task.devID, "complete") 
+	AddSchedulerTrace(devTraceMgr, evtMgr.CurrentTime(), ts, task.execID, task.devID, "complete")
 
 	if ts.priWaiting.Len() > 0 {
 		newtask := heap.Pop(&ts.priWaiting)
@@ -185,30 +185,29 @@ func timeSliceComplete(evtMgr *evtm.EventManager, context any, data any) any {
 
 // add a background task to a scheduler, give length of burst
 func addBckgrnd(evtMgr *evtm.EventManager, context any, data any) any {
-	endpt := context.(*endptDev)	
+	endpt := context.(*endptDev)
 	ts := endpt.EndptSched
 
 	if !ts.bckgrndOn {
 		return nil
 	}
 
-
 	// don't do anything if all the cores are busy
-	if ts.inBckgrnd + ts.inservice.Len() < ts.cores {
+	if ts.inBckgrnd+ts.inservice.Len() < ts.cores {
 		ts.inBckgrnd += 1
 
 		u01 := u01List[endpt.EndptState.BckgrndIdx]
-		endpt.EndptState.BckgrndIdx = (endpt.EndptState.BckgrndIdx+1)%10000
+		endpt.EndptState.BckgrndIdx = (endpt.EndptState.BckgrndIdx + 1) % 10000
 
-		duration := -endpt.EndptState.BckgrndSrv*math.Log(1.0-u01)
+		duration := -endpt.EndptState.BckgrndSrv * math.Log(1.0-u01)
 		// schedule the background task completion
 		evtMgr.Schedule(endpt, nil, rmBckgrnd, vrtime.SecondsToTime(duration))
 	}
 
 	// schedule the next background arrival
 	u01 := u01List[endpt.EndptState.BckgrndIdx]
-	endpt.EndptState.BckgrndIdx = (endpt.EndptState.BckgrndIdx+1)%10000
-	arrival := -math.Log(1.0-u01)/endpt.EndptState.BckgrndRate
+	endpt.EndptState.BckgrndIdx = (endpt.EndptState.BckgrndIdx + 1) % 10000
+	arrival := -math.Log(1.0-u01) / endpt.EndptState.BckgrndRate
 	evtMgr.Schedule(endpt, nil, addBckgrnd, vrtime.SecondsToTime(arrival))
 	return nil
 }
@@ -227,10 +226,9 @@ func rmBckgrnd(evtMgr *evtm.EventManager, context any, data any) any {
 	}
 
 	// if there are ordinary tasks in queue and enough cores now, free one up
-	if ts.priWaiting.Len() > 0 && ts.inservice.Len() + ts.inBckgrnd < ts.cores {
+	if ts.priWaiting.Len() > 0 && ts.inservice.Len()+ts.inBckgrnd < ts.cores {
 		newtask := ts.priWaiting.Pop()
 		ts.joinQueue(evtMgr, newtask.(*Task))
 	}
 	return nil
 }
-	

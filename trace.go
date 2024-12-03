@@ -4,18 +4,19 @@ import (
 	"encoding/json"
 	"github.com/iti/evt/vrtime"
 	"gopkg.in/yaml.v3"
-	"strconv"
-	"path"
 	"os"
+	"path"
+	"strconv"
 )
 
 type TraceRecordType int
+
 const (
 	NetworkType TraceRecordType = iota
 	CmpPtnType
 )
 
-var trtToStr map[TraceRecordType]string = map[TraceRecordType]string{NetworkType:"network",CmpPtnType:"cp"}
+var trtToStr map[TraceRecordType]string = map[TraceRecordType]string{NetworkType: "network", CmpPtnType: "cp"}
 
 type TraceInst struct {
 	TraceTime string
@@ -37,13 +38,13 @@ type TraceManager struct {
 	InUse bool `json:"inuse" yaml:"inuse"`
 
 	// name of experiment
-	ExpName string			`json:"expname" yaml:"expname"`
+	ExpName string `json:"expname" yaml:"expname"`
 
 	// text name associated with each objID
 	NameByID map[int]NameType `json:"namebyid" yaml:"namebyid"`
 
 	// all trace records for this experiment
-	Traces map[int][]TraceInst	`json:"traces" yaml:"traces"`
+	Traces map[int][]TraceInst `json:"traces" yaml:"traces"`
 }
 
 // CreateTraceManager is a constructor.  It saves the name of the experiment
@@ -54,7 +55,7 @@ func CreateTraceManager(ExpName string, active bool) *TraceManager {
 	tm := new(TraceManager)
 	tm.InUse = active
 	tm.ExpName = ExpName
-	tm.NameByID = make(map[int]NameType)    // dictionary of id code -> (name,type)
+	tm.NameByID = make(map[int]NameType)  // dictionary of id code -> (name,type)
 	tm.Traces = make(map[int][]TraceInst) // traces have 'execution' origins, are saved by index to these
 	return tm
 }
@@ -121,19 +122,20 @@ func (tm *TraceManager) WriteToFile(filename string) bool {
 	f.Close()
 	return true
 }
-// NetTraceRecord saves information about the visitation of a message to some point in the simulation.
+
+// NetTrace saves information about the visitation of a message to some point in the simulation.
 // saved for post-run analysis
 type NetTrace struct {
 	Time      float64 // time in float64
 	Ticks     int64   // ticks variable of time
 	Priority  int64   // priority field of time-stamp
-	FlowID    int    // integer identifier identifying the chain of traces this is part of
+	FlowID    int     // integer identifier identifying the chain of traces this is part of
 	ExecID    int
-	ConnectID int     // integer identifier of the network connection
-	ObjID     int     // integer id for object being referenced
-	Op        string  // "start", "stop", "enter", "exit"
-	PcktIdx   int     // packet index inside of a multi-packet message
-	Packet    bool    // true if the event marks the passage of a packet (rather than flow)
+	ConnectID int    // integer identifier of the network connection
+	ObjID     int    // integer id for object being referenced
+	Op        string // "start", "stop", "enter", "exit"
+	PcktIdx   int    // packet index inside of a multi-packet message
+	Packet    bool   // true if the event marks the passage of a packet (rather than flow)
 	MsgType   string
 	Rate      float64 // rate associated with the connection
 }
@@ -155,16 +157,15 @@ func (ntr *NetTrace) Serialize() string {
 }
 
 type SchedulerTrace struct {
-	Time float64
-	ObjID int
-	ExecID int
-	Op string
-	Cores int
+	Time      float64
+	ObjID     int
+	ExecID    int
+	Op        string
+	Cores     int
 	Inservice int
 	Inbckgrnd int
-	Waiting int
+	Waiting   int
 }
-
 
 func (st *SchedulerTrace) Serialize() string {
 	var bytes []byte
@@ -179,11 +180,11 @@ func (st *SchedulerTrace) Serialize() string {
 }
 
 type IntrfcTrace struct {
-	Time float64
-	ObjID int
+	Time   float64
+	ObjID  int
 	ExecID int
-	Op string
-	CQ string
+	Op     string
+	CQ     string
 }
 
 func (it *IntrfcTrace) Serialize() string {
@@ -206,12 +207,11 @@ func AddIntrfcTrace(tm *TraceManager, vrt vrtime.Time, execID, objID int, op, CQ
 	it.Op = op
 	it.CQ = CQ
 	itStr := it.Serialize()
-	strTime := strconv.FormatFloat(it.Time,'f', -1, 64)
-	trcInst := TraceInst{TraceTime: strTime, TraceType:"interface", TraceStr:itStr}
+	strTime := strconv.FormatFloat(it.Time, 'f', -1, 64)
+	trcInst := TraceInst{TraceTime: strTime, TraceType: "interface", TraceStr: itStr}
 	tm.AddTrace(vrt, execID, trcInst)
 }
 
-		
 func AddSchedulerTrace(tm *TraceManager, vrt vrtime.Time, ts *TaskScheduler, execID, objID int, op string) {
 	endpt := EndptDevByID[objID]
 	if !endpt.EndptState.Trace {
@@ -230,9 +230,9 @@ func AddSchedulerTrace(tm *TraceManager, vrt vrtime.Time, ts *TaskScheduler, exe
 	stStr := st.Serialize()
 
 	traceTime := strconv.FormatFloat(vrt.Seconds(), 'f', -1, 64)
-	trcInst := TraceInst{TraceTime: traceTime, TraceType:"scheduler", TraceStr:stStr}
+	trcInst := TraceInst{TraceTime: traceTime, TraceType: "scheduler", TraceStr: stStr}
 	tm.AddTrace(vrt, st.ExecID, trcInst)
-}	
+}
 
 // AddNetTrace creates a record of the trace using its calling arguments, and stores it
 func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, op string) {
@@ -251,7 +251,6 @@ func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, o
 	ntrStr := ntr.Serialize()
 	traceTime := strconv.FormatFloat(vrt.Seconds(), 'f', -1, 64)
 
-	trcInst := TraceInst{TraceTime: traceTime, TraceType:"network", TraceStr:ntrStr}
+	trcInst := TraceInst{TraceTime: traceTime, TraceType: "network", TraceStr: ntrStr}
 	tm.AddTrace(vrt, ntr.ExecID, trcInst)
 }
-

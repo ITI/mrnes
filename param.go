@@ -1,12 +1,12 @@
 package mrnes
 
 import (
+	"encoding/json"
 	"fmt"
 	"golang.org/x/exp/slices"
-	"path"
-	"os"
 	"gopkg.in/yaml.v3"
-	"encoding/json"
+	"os"
+	"path"
 )
 
 // AttrbStruct holds the name of an attribute and a value for it
@@ -17,10 +17,10 @@ type AttrbStruct struct {
 // A valueStruct type holds three different types a value might have,
 // typically only one of these is used, and which one is known by context
 type valueStruct struct {
-    intValue    int
-    floatValue  float64
-    stringValue string
-    boolValue   bool
+	intValue    int
+	floatValue  float64
+	stringValue string
+	boolValue   bool
 }
 
 // CreateAttrbStruct is a constructor
@@ -469,11 +469,11 @@ func GetExpParamDesc() ([]string, map[string][]string, map[string][]string) {
 		ExpAttributes["Interface"] = []string{"name", "group", "devtype", "devname", "media", "network", "*"}
 		ExpAttributes["Network"] = []string{"name", "group", "media", "scale", "*"}
 		ExpParams = make(map[string][]string)
-		ExpParams["Switch"] = []string{"buffer", "trace"}
-		ExpParams["Router"] = []string{"buffer", "trace"}
-		ExpParams["Endpt"] = []string{"trace", "model", "bckgrndRate",  "bckgrndSrv"}
+		ExpParams["Switch"] = []string{"model", "buffer", "trace", "simple" }
+		ExpParams["Router"] = []string{"model", "buffer", "trace", "simple" }
+		ExpParams["Endpt"] = []string{"trace", "model", "bckgrndRate", "bckgrndSrv"}
 		ExpParams["Network"] = []string{"latency", "bandwidth", "bckgrndBW", "capacity", "drop", "trace"}
-		ExpParams["Interface"] = []string{"latency", "delay", "buffer", "bandwidth", 
+		ExpParams["Interface"] = []string{"latency", "delay", "buffer", "bandwidth",
 			"bckgrndBW", "MTU", "rsrvd", "drop", "trace"}
 	}
 

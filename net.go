@@ -2,8 +2,8 @@ package mrnes
 
 // nets.go contains code and data structures supporting the
 // simulation of traffic through the communication network.
-// mrnes supports passage of discrete packets.  These pass 
-// through the interfaces of devices (routers and switch) on the 
+// mrnes supports passage of discrete packets.  These pass
+// through the interfaces of devices (routers and switch) on the
 // shortest path route between endpoints, accumulating delay through the interfaces
 // and across the networks, as a function of overall traffic load (most particularly
 // including the background flows)
@@ -15,8 +15,8 @@ import (
 	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 	"math"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 // The mrnsbit network simulator is built around two strong assumptions that
@@ -50,12 +50,12 @@ type intPair struct {
 
 type intrfcIDPair struct {
 	prevID, nextID int
-	rate float64
+	rate           float64
 }
 
 type intrfcRate struct {
 	intrfcID int
-	rate float64
+	rate     float64
 }
 
 type floatPair struct {
@@ -65,52 +65,51 @@ type floatPair struct {
 // classQueue holds information about a given
 // class of packets and/or flows
 type classQueue struct {
-	classID int
-	ingressLambda float64	// sum of rates of flows in this class on the ingress side
-	egressLambda float64	// sum of rates of flows in this class on the egress side
-	inQueue	[]*NetworkMsg	// number of enqueued packets
-	waiting float64			// waiting time of class flow (from priority queue formula)
+	classID       int
+	ingressLambda float64       // sum of rates of flows in this class on the ingress side
+	egressLambda  float64       // sum of rates of flows in this class on the egress side
+	inQueue       []*NetworkMsg // number of enqueued packets
+	waiting       float64       // waiting time of class flow (from priority queue formula)
 }
-
 
 // append the given NetworkMsg to the classQueue, to await service
 func (cQ *classQueue) addNetworkMsg(nm *NetworkMsg) {
 	cQ.inQueue = append(cQ.inQueue, nm)
-}	
+}
 
 // represent the queue state of the classQueue in a string, for traces
 func (cQ *classQueue) Str() string {
 	rtnVec := []string{strconv.Itoa(cQ.classID), strconv.Itoa(len(cQ.inQueue))}
-	return strings.Join(rtnVec," % ")
-}	
+	return strings.Join(rtnVec, " % ")
+}
 
-// a ClassQueue holds multi-level priority queue structures for
-// an interface	
+// ClassQueue holds multi-level priority queue structures for
+// an interface
 type ClassQueue struct {
-	ingressId2Q map[int]int		// classID to index in ordered priority list
-	egressId2Q map[int]int		// classID to index in ordered priority list
-	ingressQs []*classQueue		// messages waiting for service on the ingress side, earlier indices mean higher priority
-	egressQs []*classQueue		// messages waiting for service on the egress side, earlier indices mean higher priority
+	ingressID2Q map[int]int   // classID to index in ordered priority list
+	egressID2Q  map[int]int   // classID to index in ordered priority list
+	ingressQs   []*classQueue // messages waiting for service on the ingress side, earlier indices mean higher priority
+	egressQs    []*classQueue // messages waiting for service on the egress side, earlier indices mean higher priority
 }
 
 // createClassQueue is a constructor
 func createClassQueue() *ClassQueue {
 	CQ := new(ClassQueue)
-	CQ.ingressId2Q = make(map[int]int)
-	CQ.egressId2Q = make(map[int]int)
+	CQ.ingressID2Q = make(map[int]int)
+	CQ.egressID2Q = make(map[int]int)
 	CQ.ingressQs = []*classQueue{}
 	CQ.egressQs = []*classQueue{}
 	return CQ
-}	
+}
 
 // Str represents the state of the ClassQueue queues as a string, for traces
 func (CQ *ClassQueue) Str() string {
 	rtn := []string{}
-	for idx:=0; idx<len(CQ.ingressQs); idx++ {
+	for idx := 0; idx < len(CQ.ingressQs); idx++ {
 		rtn = append(rtn, "ingress_"+CQ.ingressQs[idx].Str())
 	}
 
-	for idx:=0; idx<len(CQ.egressQs); idx++ {
+	for idx := 0; idx < len(CQ.egressQs); idx++ {
 		rtn = append(rtn, "egress_"+CQ.egressQs[idx].Str())
 	}
 
@@ -118,7 +117,7 @@ func (CQ *ClassQueue) Str() string {
 }
 
 // append a classID to the ClassQueue if not already present
-// maintain decreasing order of classID (higher classID is higher priority) 
+// maintain decreasing order of classID (higher classID is higher priority)
 // in the insertion
 func (CQ *ClassQueue) addClassID(classID int, ingress bool) {
 	var Qs []*classQueue
@@ -127,10 +126,10 @@ func (CQ *ClassQueue) addClassID(classID int, ingress bool) {
 	// do processing on queues and id2A
 	if ingress {
 		Qs = CQ.ingressQs
-		id2Q   = CQ.ingressId2Q
+		id2Q = CQ.ingressID2Q
 	} else {
 		Qs = CQ.egressQs
-		id2Q   = CQ.egressId2Q
+		id2Q = CQ.egressID2Q
 	}
 
 	// if we have it already we're done
@@ -142,15 +141,15 @@ func (CQ *ClassQueue) addClassID(classID int, ingress bool) {
 	// starting with highest priority, find first instance of lower priority.
 	// That's the insertion point
 	here := 0
-	for idx:=0; idx<len(Qs); idx++ {
-		thisClassID := Qs[idx].classID 
+	for idx := 0; idx < len(Qs); idx++ {
+		thisClassID := Qs[idx].classID
 		if thisClassID < classID {
-			break 
-		} 
+			break
+		}
 		here += 1
 	}
 
-	// create and initialize the new classQueue structure 
+	// create and initialize the new classQueue structure
 	newcq := new(classQueue)
 	newcq.classID = classID
 	newcq.inQueue = []*NetworkMsg{}
@@ -162,18 +161,18 @@ func (CQ *ClassQueue) addClassID(classID int, ingress bool) {
 
 	// redo the id2Q map after the insert
 	id2Q = make(map[int]int)
-	for idx:=0; idx<len(Qs); idx++ {
+	for idx := 0; idx < len(Qs); idx++ {
 		cq := Qs[idx]
 		id2Q[cq.classID] = idx
 	}
 
 	// save the modified data structures
 	if ingress {
-		CQ.ingressQs = Qs 
-		CQ.ingressId2Q  = id2Q
+		CQ.ingressQs = Qs
+		CQ.ingressID2Q = id2Q
 	} else {
-		CQ.egressQs = Qs 
-		CQ.egressId2Q  = id2Q
+		CQ.egressQs = Qs
+		CQ.egressID2Q = id2Q
 	}
 }
 
@@ -184,13 +183,13 @@ func (CQ *ClassQueue) transferBW(classID int, msgLen float64, intrfc *intrfcStru
 	// subtract off bandwidth of higher priority flows
 	var qIdx int
 	if ingress {
-		qIdx = CQ.ingressId2Q[classID]
+		qIdx = CQ.ingressID2Q[classID]
 	} else {
-		qIdx = CQ.egressId2Q[classID]
+		qIdx = CQ.egressID2Q[classID]
 	}
 
 	// subtract off bandwidth of all classIDs with higher priority
-	for idx:=0; idx< qIdx; idx++ {
+	for idx := 0; idx < qIdx; idx++ {
 		if ingress {
 			bndwdth -= CQ.ingressQs[idx].ingressLambda
 		} else {
@@ -198,16 +197,16 @@ func (CQ *ClassQueue) transferBW(classID int, msgLen float64, intrfc *intrfcStru
 		}
 	}
 	return bndwdth
-}	
- 
+}
+
 // addNetworkMsg appends the network message argument to the correct
 // inQueue
 func (CQ *ClassQueue) addNetworkMsg(nm *NetworkMsg, ingress bool) {
 	classID := nm.ClassID
 	if ingress {
-		CQ.ingressQs[CQ.ingressId2Q[classID]].inQueue = append(CQ.ingressQs[CQ.ingressId2Q[classID]].inQueue, nm)
+		CQ.ingressQs[CQ.ingressID2Q[classID]].inQueue = append(CQ.ingressQs[CQ.ingressID2Q[classID]].inQueue, nm)
 	} else {
-		CQ.egressQs[CQ.egressId2Q[classID]].inQueue = append(CQ.egressQs[CQ.egressId2Q[classID]].inQueue, nm)
+		CQ.egressQs[CQ.egressID2Q[classID]].inQueue = append(CQ.egressQs[CQ.egressID2Q[classID]].inQueue, nm)
 	}
 }
 
@@ -225,57 +224,57 @@ func (CQ *ClassQueue) nxtNetworkMsg(intrfc *intrfcStruct, ingress bool) *Network
 	}
 
 	// look for the highest priority queue that is not empty
-	for idx:=0; idx<len(Qs); idx++ {
+	for idx := 0; idx < len(Qs); idx++ {
 		cg := Qs[idx]
 		if len(cg.inQueue) > 0 {
 			// found it.  Extract it, modify its queue
 			nm, cg.inQueue = cg.inQueue[0], cg.inQueue[1:]
-			break	
+			break
 		}
 	}
 	return nm
 }
 
-
 // getClassQueue returns the classQueue associated with the given classID
 func (CQ *ClassQueue) getClassQueue(classID int, ingress bool) *classQueue {
 	if ingress {
-		_, present := CQ.ingressId2Q[classID]
+		_, present := CQ.ingressID2Q[classID]
 		if !present {
-			panic(fmt.Errorf("classID %d not found in ClassQueue"))
+			panic(fmt.Errorf("classID %d not found in ClassQueue", classID))
 		}
-		return CQ.ingressQs[CQ.ingressId2Q[classID]]
+		return CQ.ingressQs[CQ.ingressID2Q[classID]]
 	} else {
-		_, present := CQ.egressId2Q[classID]
+		_, present := CQ.egressID2Q[classID]
 		if !present {
-			panic(fmt.Errorf("classID %d not found in ClassQueue"))
+			panic(fmt.Errorf("classID %d not found in ClassQueue", classID))
 		}
-		return CQ.egressQs[CQ.egressId2Q[classID]]
+		return CQ.egressQs[CQ.egressID2Q[classID]]
 	}
 }
 
-// putClassQueue replaces the classQueue element 
+// putClassQueue replaces the classQueue element
 func (CQ *ClassQueue) putClassQueue(cQ *classQueue, ingress bool) {
 	if ingress {
-		_, present := CQ.ingressId2Q[cQ.classID]
+		_, present := CQ.ingressID2Q[cQ.classID]
 		if !present {
-			panic(fmt.Errorf("classID %d not found in ClassQueue"))
+			panic(fmt.Errorf("classID %d not found in ClassQueue", cQ.classID))
 		}
-		CQ.ingressQs[CQ.ingressId2Q[cQ.classID]] = cQ
+		CQ.ingressQs[CQ.ingressID2Q[cQ.classID]] = cQ
 	} else {
-		_, present := CQ.egressId2Q[cQ.classID]
+		_, present := CQ.egressID2Q[cQ.classID]
 		if !present {
-			panic(fmt.Errorf("classID %d not found in ClassQueue"))
+			panic(fmt.Errorf("classID %d not found in ClassQueue", cQ.classID))
 		}
-		CQ.egressQs[CQ.egressId2Q[cQ.classID]] = cQ
+		CQ.egressQs[CQ.egressID2Q[cQ.classID]] = cQ
 	}
-} 
+}
 
 // NetworkMsgType give enumeration for message types that may be given to the network
 // to carry.  packet is a discrete packet, handled differently from flows.
 // srtFlow tags a message that introduces a new flow, endFlow tags one that terminates it,
 // and chgFlow tags a message that alters the flow rate on a given flow.
 type NetworkMsgType int
+
 const (
 	PacketType NetworkMsgType = iota
 	FlowType
@@ -283,23 +282,24 @@ const (
 
 // FlowAction describes the reason for the flow message, that it is starting, ending, or changing the request rate
 type FlowAction int
+
 const (
 	None FlowAction = iota
-	Srt 
-	Chg 
+	Srt
+	Chg
 	End
 )
 
-// nmtToStr is a translation table for creating strings from more complex 
+// nmtToStr is a translation table for creating strings from more complex
 // data types
-var nmtToStr map[NetworkMsgType]string = map[NetworkMsgType]string{PacketType:"packet", 
-	FlowType:"flow"}
+var nmtToStr map[NetworkMsgType]string = map[NetworkMsgType]string{PacketType: "packet",
+	FlowType: "flow"}
 
 // routeStepIntrfcs maps a pair of device IDs to a pair of interface IDs
 // that connect them
 var routeStepIntrfcs map[intPair]intPair
 
-// getRouteStepIntrfcs looks up the identity of the interfaces involved in connecting 
+// getRouteStepIntrfcs looks up the identity of the interfaces involved in connecting
 // the named source and the named destination.  These were previously built into a table
 func getRouteStepIntrfcs(srcID, dstID int) (int, int) {
 	ip := intPair{i: srcID, j: dstID}
@@ -317,20 +317,19 @@ func getRouteStepIntrfcs(srcID, dstID int) (int, int) {
 // NetworkPortal implements the pces interface used to pass
 // traffic between the application layer and the network sim
 type NetworkPortal struct {
-	QkNetSim		bool
-	ReturnTo		map[int]*rtnRecord	// indexed by connectID
-	LossRtn			map[int]*rtnRecord	// indexed by connectID
-	ReportRtnSrc	map[int]*rtnRecord	// indexed by connectID
-	ReportRtnDst	map[int]*rtnRecord	// indexed by connectID
-	RequestRate		map[int]float64		// indexed by flowID to get requested arrival rate
-	AcceptedRate	map[int]float64		// indexed by flowID to get accepted arrival rate
-	Class			map[int]int			// indexed by flowID to get priority class
-	Elastic			map[int]bool		// indexed by flowID to record whether flow is elastic
-	Connections		map[int]int			// indexed by connectID to get flowID
-	InvConnection	map[int]int			// indexed by flowID to get connectID
-	LatencyConsts	map[int]float64		// indexex by flowID to get latency constants on flow's route
+	QkNetSim      bool
+	ReturnTo      map[int]*rtnRecord // indexed by connectID
+	LossRtn       map[int]*rtnRecord // indexed by connectID
+	ReportRtnSrc  map[int]*rtnRecord // indexed by connectID
+	ReportRtnDst  map[int]*rtnRecord // indexed by connectID
+	RequestRate   map[int]float64    // indexed by flowID to get requested arrival rate
+	AcceptedRate  map[int]float64    // indexed by flowID to get accepted arrival rate
+	Class         map[int]int        // indexed by flowID to get priority class
+	Elastic       map[int]bool       // indexed by flowID to record whether flow is elastic
+	Connections   map[int]int        // indexed by connectID to get flowID
+	InvConnection map[int]int        // indexed by flowID to get connectID
+	LatencyConsts map[int]float64    // indexex by flowID to get latency constants on flow's route
 }
-
 
 // ActivePortal remembers the most recent NetworkPortal created
 // (there should be only one call to CreateNetworkPortal...)
@@ -338,7 +337,7 @@ var ActivePortal *NetworkPortal
 
 type ActiveRec struct {
 	Number int
-	Rate float64
+	Rate   float64
 }
 
 // CreateNetworkPortal is a constructor, passed a flag indicating which
@@ -354,13 +353,13 @@ func CreateNetworkPortal() *NetworkPortal {
 	np.QkNetSim = false
 	np.ReturnTo = make(map[int]*rtnRecord)
 	np.LossRtn = make(map[int]*rtnRecord)
-	np.ReportRtnSrc  = make(map[int]*rtnRecord)
-	np.ReportRtnDst  = make(map[int]*rtnRecord)
-	np.RequestRate	 = make(map[int]float64)
-	np.AcceptedRate  = make(map[int]float64)
-	np.Class		 = make(map[int]int)
-	np.Elastic		 = make(map[int]bool)
-	np.Connections	 = make(map[int]int)
+	np.ReportRtnSrc = make(map[int]*rtnRecord)
+	np.ReportRtnDst = make(map[int]*rtnRecord)
+	np.RequestRate = make(map[int]float64)
+	np.AcceptedRate = make(map[int]float64)
+	np.Class = make(map[int]int)
+	np.Elastic = make(map[int]bool)
+	np.Connections = make(map[int]int)
 	np.InvConnection = make(map[int]int)
 	np.LatencyConsts = make(map[int]float64)
 
@@ -370,15 +369,14 @@ func CreateNetworkPortal() *NetworkPortal {
 	return np
 }
 
-
 // SetQkNetSim saves the argument as indicating whether latencies
-// should be computed as 'Placed', meaning constant, given the state of the network at the time of 
+// should be computed as 'Placed', meaning constant, given the state of the network at the time of
 // computation
 func (np *NetworkPortal) SetQkNetSim(quick bool) {
 	np.QkNetSim = quick
 }
 
-// ClearRmFlow removes entries from maps indexed 
+// ClearRmFlow removes entries from maps indexed
 // by flowID and associated connectID, to help clean up space
 func (np *NetworkPortal) ClearRmFlow(flowID int) {
 	connectID := np.InvConnection[flowID]
@@ -387,22 +385,29 @@ func (np *NetworkPortal) ClearRmFlow(flowID int) {
 	delete(np.ReportRtnSrc, connectID)
 	delete(np.ReportRtnDst, connectID)
 	delete(np.Connections, connectID)
-	
+
 	delete(np.RequestRate, flowID)
 	delete(np.AcceptedRate, flowID)
 	delete(np.Class, flowID)
 	delete(np.LatencyConsts, flowID)
 }
 
-// EndptCPUModel helps NetworkPortal implement the pces NetworkPortal interface,
+// EndptDevModel helps NetworkPortal implement the pces NetworkPortal interface,
 // returning the CPU model associated with a named endpt.  Present because the
 // application layer does not otherwise have visibility into the network topology
-func (np *NetworkPortal) EndptCPUModel(devName string) string {
+func (np *NetworkPortal) EndptDevModel(devName string, accelName string) string {
 	endpt, present := EndptDevByName[devName]
-	if present {
+	if !present {
+		return ""
+	}
+	if len(accelName) == 0 {
 		return endpt.EndptModel
 	}
-	return ""
+	accelModel, present := endpt.EndptAccelModel[accelName]
+	if !present {
+		return ""
+	}
+	return accelModel
 }
 
 // Depart is called to return an application message being carried through
@@ -432,7 +437,7 @@ func (np *NetworkPortal) Depart(evtMgr *evtm.EventManager, nm NetworkMsg) {
 	rtnMsg.Latency = evtMgr.CurrentSeconds() - nm.StartTime
 	if nm.carriesPckt() {
 		rtnMsg.Rate = nm.PcktRate
-		rtnMsg.PrLoss = (1.0-prArrvl)
+		rtnMsg.PrLoss = (1.0 - prArrvl)
 	} else {
 		rtnMsg.Rate = np.AcceptedRate[nm.FlowID]
 	}
@@ -465,7 +470,7 @@ func (np *NetworkPortal) requestedLoadFracVec(vec []int) []float64 {
 	}
 
 	// normalize
-	for idx, _ := range vec {
+	for idx := range vec {
 		rtn[idx] /= agg
 	}
 	return rtn
@@ -474,11 +479,11 @@ func (np *NetworkPortal) requestedLoadFracVec(vec []int) []float64 {
 // RtnMsgStruct formats the report passed from the network to the
 // application calling it
 type RtnMsgStruct struct {
-	Latency float64		// span of time (secs) from srcDev to dstDev
-	Rate    float64		// for a flow, its accept rate.  For a packet, the minimum non-flow bandwidth at a 
-						// network or interface it encountered
-	PrLoss  float64		// estimated probability of having been dropped somewhere in transit
-	Msg		any			// msg introduced at EnterNetwork
+	Latency float64 // span of time (secs) from srcDev to dstDev
+	Rate    float64 // for a flow, its accept rate.  For a packet, the minimum non-flow bandwidth at a
+	// network or interface it encountered
+	PrLoss float64 // estimated probability of having been dropped somewhere in transit
+	Msg    any     // msg introduced at EnterNetwork
 }
 
 // Arrive is called at the point an application message is received by the network
@@ -539,6 +544,7 @@ func (np *NetworkPortal) lostConnection(evtMgr *evtm.EventManager, nm *NetworkMs
 
 // DevCode is the base type for an enumerated type of network devices
 type DevCode int
+
 const (
 	EndptCode DevCode = iota
 	SwitchCode
@@ -546,7 +552,7 @@ const (
 	UnknownCode
 )
 
-// DevCodefromStr returns the devCode corresponding to an string name for it
+// DevCodeFromStr returns the devCode corresponding to an string name for it
 func DevCodeFromStr(code string) DevCode {
 	switch code {
 	case "Endpt", "endpt":
@@ -578,6 +584,7 @@ func DevCodeToStr(code DevCode) string {
 
 // NetworkScale is the base type for an enumerated type of network type descriptions
 type NetworkScale int
+
 const (
 	LAN NetworkScale = iota
 	WAN
@@ -625,8 +632,9 @@ func NetScaleToStr(ntype NetworkScale) string {
 	}
 }
 
-// networkMedia is the base type for an enumerated type of comm network media
+// NetworkMedia is the base type for an enumerated type of comm network media
 type NetworkMedia int
+
 const (
 	Wired NetworkMedia = iota
 	Wireless
@@ -646,27 +654,28 @@ func NetMediaFromStr(media string) NetworkMedia {
 }
 
 // every new network connection is given a unique connectID upon arrival
-var connections int 
+var connections int
+
 func nxtConnectID() int {
 	connections += 1
 	return connections
 }
 
-
 type DFS map[int]intrfcIDPair
 
-// the topDev interface specifies the functionality different device types provide
+// TopoDev interface specifies the functionality different device types provide
 type TopoDev interface {
 	DevName() string              // every device has a unique name
 	DevID() int                   // every device has a unique integer id
 	DevType() DevCode             // every device is one of the devCode types
 	DevIntrfcs() []*intrfcStruct  // we can get from devices a list of the interfaces they endpt, if any
-	DevDelay(any) float64         // every device can be be queried for the delay it introduces for an operation
+	DevDelay(any, int) float64    // every device can be be queried for the delay it introduces for an operation
 	DevState() any                // every device as a structure of state that can be accessed
+	DevIsSimple() bool            // switches or routers can be 'simple'
 	DevRng() *rngstream.RngStream // every device has its own RNG stream
 	DevAddActive(*NetworkMsg)     // add the connectID argument to the device's list of active connections
 	DevRmActive(int)              // remove the connectID argument to the device's list of active connections
-	DevForward() DFS			  // index by FlowID, yields map of ingress intrfc ID to egress intrfc ID
+	DevForward() DFS              // index by FlowID, yields map of ingress intrfc ID to egress intrfc ID
 	LogNetEvent(vrtime.Time, *NetworkMsg, string)
 }
 
@@ -690,7 +699,7 @@ type intrfcStruct struct {
 	Device   TopoDev         // pointer to the device holding the interface
 	PrmDev   paramObj        // pointer to the device holding the interface as a paramObj
 	Cable    *intrfcStruct   // For a wired interface, points to the "other" interface in the connection
-	Carry    []*intrfcStruct   // points to the "other" interface in a connection
+	Carry    []*intrfcStruct // points to the "other" interface in a connection
 	Wireless []*intrfcStruct // For a wired interface, points to the "other" interface in the connection
 	Faces    *networkStruct  // pointer to the network the interface interacts with
 	State    *intrfcState    // pointer to the interface's block of state information
@@ -698,51 +707,51 @@ type intrfcStruct struct {
 
 // The  intrfcState holds parameters descriptive of the interface's capabilities
 type intrfcState struct {
-	Bndwdth     float64         // maximum bandwidth (in Mbytes/sec)
-	BckgrndBW	float64			// deep background load consumes bandwidth
-	BufferSize  float64         // buffer capacity (in Mbytes)
-	Latency     float64         // time the leading bit takes to traverse the wire out of the interface
-	Delay       float64         // time the leading bit takes to traverse the interface
+	Bndwdth        float64 // maximum bandwidth (in Mbytes/sec)
+	BckgrndBW      float64 // deep background load consumes bandwidth
+	BufferSize     float64 // buffer capacity (in Mbytes)
+	Latency        float64 // time the leading bit takes to traverse the wire out of the interface
+	Delay          float64 // time the leading bit takes to traverse the interface
 	IngressTransit bool
-	EgressTransit bool
+	EgressTransit  bool
+	Simple         bool // use the pass-through timing model
+	MTU            int  // maximum packet size (bytes)
+	Trace          bool // switch for calling add trace
+	Drop           bool // whether to permit packet drops
 
-	MTU         int             // maximum packet size (bytes)
-	Trace       bool            // switch for calling add trace
-	Drop		bool			// whether to permit packet drops
+	ToIngress   map[int]float64 // sum of flow rates into ingress side of device
+	ThruIngress map[int]float64 // sum of flow rates out of ingress side of device
+	ToEgress    map[int]float64 // sum of flow rates into egress side of device
+	ThruEgress  map[int]float64 // sum of flow rates out of egress side device
 
-	ToIngress	map[int]float64	// sum of flow rates into ingress side of device
-	ThruIngress	map[int]float64 // sum of flow rates out of ingress side of device
-	ToEgress	map[int]float64 // sum of flow rates into egress side of device
-	ThruEgress	map[int]float64 // sum of flow rates out of egress side device
-
-	PcktClass	    float64		// fraction of bandwidth reserved for packets
-	IngressLambda	float64		// sum of rates of flows approach interface from ingress side. 
-	EgressLambda	float64
-	RsrvdFrac		float64		// fraction of bandwidth reserved for non-flow traffic 
-	end2endBW		float64		// scratch location
-	priQueue	    *ClassQueue
+	PcktClass     float64 // fraction of bandwidth reserved for packets
+	IngressLambda float64 // sum of rates of flows approach interface from ingress side.
+	EgressLambda  float64
+	RsrvdFrac     float64 // fraction of bandwidth reserved for non-flow traffic
+	end2endBW     float64 // scratch location
+	priQueue      *ClassQueue
 }
 
 // useableBW returns the interface bandwidth after background load is removed
 func (intrfc *intrfcStruct) useableBW() float64 {
-	return intrfc.State.Bndwdth-intrfc.State.BckgrndBW
+	return intrfc.State.Bndwdth - intrfc.State.BckgrndBW
 }
 
 // createIntrfcState is a constructor, assumes defaults on unspecified attributes
 func createIntrfcState() *intrfcState {
 	iss := new(intrfcState)
-	iss.Delay = 1e+6     // in seconds!  Set this way so that if not initialized we'll notice
+	iss.Delay = 1e+6 // in seconds!  Set this way so that if not initialized we'll notice
 	iss.Latency = 1e+6
-	iss.MTU = 1500			// in bytes Set for Ethernet2 MTU, should change if wireless
+	iss.MTU = 1500 // in bytes Set for Ethernet2 MTU, should change if wireless
 
-	iss.ToIngress		   = make(map[int]float64)
-	iss.ThruIngress		   = make(map[int]float64)
-	iss.ToEgress		   = make(map[int]float64)
-	iss.ThruEgress		   = make(map[int]float64)
-	iss.EgressLambda	   = 0.0
-	iss.IngressLambda	   = 0.0
-	iss.RsrvdFrac		   = 0.0
-	iss.priQueue		   = createClassQueue()
+	iss.ToIngress = make(map[int]float64)
+	iss.ThruIngress = make(map[int]float64)
+	iss.ToEgress = make(map[int]float64)
+	iss.ThruEgress = make(map[int]float64)
+	iss.EgressLambda = 0.0
+	iss.IngressLambda = 0.0
+	iss.RsrvdFrac = 0.0
+	iss.priQueue = createClassQueue()
 	return iss
 }
 
@@ -756,7 +765,7 @@ func createIntrfcState() *intrfcState {
 // rho_k : load of class-k, rho_k = lambda_k*S_k
 //
 // R : mean residual of server on arrival : (server util)*D/2
-// 
+//
 //  W_k = \frac{R}/((1- \sum_{j=1}^{k-1} rho_j)*(1-\sum_{j=1}^{k} \rho_j))
 //
 // Note that S_k = D for all k, and that R = (D/2)*\sum_{j=1}^N \rho_j
@@ -767,13 +776,13 @@ func createIntrfcState() *intrfcState {
 // W = W_k + \sum{j=1}^k Q_j
 //
 // where Q_j is the number of packets in class j waiting for service.
-// 
+//
 //
 
 // ComputeFlowWaits computes a model-based estimate of the waiting time
 // due to higher priority flows
 func (intrfc *intrfcStruct) ComputeFlowWaits(D float64, ingress bool) {
-	CQ     := intrfc.State.priQueue
+	CQ := intrfc.State.priQueue
 
 	var Qs []*classQueue
 	if ingress {
@@ -782,34 +791,33 @@ func (intrfc *intrfcStruct) ComputeFlowWaits(D float64, ingress bool) {
 		Qs = CQ.egressQs
 	}
 
-	rho    := make([]float64, len(Qs))
+	rho := make([]float64, len(Qs))
 	rhoSum := make([]float64, len(Qs))
 	var allRho float64
 
-	for idx:=0; idx<len(Qs); idx++ {
+	for idx := 0; idx < len(Qs); idx++ {
 		cg := Qs[idx]
 		if ingress {
-			rho[idx] = D*cg.ingressLambda
+			rho[idx] = D * cg.ingressLambda
 		} else {
-			rho[idx] = D*cg.egressLambda
+			rho[idx] = D * cg.egressLambda
 		}
 		allRho += rho[idx]
-		if idx==0 {
+		if idx == 0 {
 			rhoSum[idx] = rho[idx]
 		} else {
-			rhoSum[idx] = rho[idx]+rhoSum[idx-1]
+			rhoSum[idx] = rho[idx] + rhoSum[idx-1]
 		}
 	}
-	rbar := allRho*D/2.0
+	rbar := allRho * D / 2.0
 
-	for idx:=0; idx<len(Qs); idx++ {
+	for idx := 0; idx < len(Qs); idx++ {
 		cg := Qs[idx]
-		cg.waiting = rbar/((1-rhoSum[idx-1])*(1-rhoSum[idx]))	
+		cg.waiting = rbar / ((1 - rhoSum[idx-1]) * (1 - rhoSum[idx]))
 	}
 }
 
-
-// createIntrfcStruct is a constructor, building an intrfcStruct 
+// createIntrfcStruct is a constructor, building an intrfcStruct
 // from a desc description of the interface
 func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 	is := new(intrfcStruct)
@@ -848,41 +856,41 @@ func createIntrfcStruct(intrfc *IntrfcDesc) *intrfcStruct {
 	}
 
 	is.Wireless = make([]*intrfcStruct, 0)
-	is.Carry    = make([]*intrfcStruct, 0)
+	is.Carry = make([]*intrfcStruct, 0)
 
-	// is.State = createIntrfcState()
+	is.State = createIntrfcState()
 
 	return is
 }
 
-// non-preemptive priority 
+// non-preemptive priority
 // k=1 is highest priority
 // W_k : mean waiting time of class-k msgs
 // S_k : mean service time of class-k msg
 // lambda_k : arrival rate class k
 // rho_k : load of class-k, rho_k = lambda_k*S_k
 // R : mean residual of server on arrival : (server util)*D/2
-// 
+//
 //  W_k = R/((1-rho_{1}-rho_{2}- ... -rho_{k-1})*(1-rho_1-rho_2- ... -rho_k))
 //
 //  Mean time in system of class-k msg is T_k = W_k+S_k
 //
 // for our purposes we will use k=0 for least class, and use the formula
-//  W_0 = R/((1-rho_{1}-rho_{2}- ... -rho_{k-1})*(1-rho_1-rho_2- ... -rho_{k-1}-rho_0))	
+//  W_0 = R/((1-rho_{1}-rho_{2}- ... -rho_{k-1})*(1-rho_1-rho_2- ... -rho_{k-1}-rho_0))
 
 // ShortIntrfc stores information we serialize for storage in a trace
 type ShortIntrfc struct {
-	DevName string
-	Faces string
-	ToIngress float64
+	DevName     string
+	Faces       string
+	ToIngress   float64
 	ThruIngress float64
-	ToEgress float64
-	ThruEgress float64
-	FlowID int
-	NetMsgType NetworkMsgType
-	Rate float64
-	PrArrvl float64
-	Time float64
+	ToEgress    float64
+	ThruEgress  float64
+	FlowID      int
+	NetMsgType  NetworkMsgType
+	Rate        float64
+	PrArrvl     float64
+	Time        float64
 }
 
 // Serialize turns a ShortIntrfc into a string, in yaml format
@@ -913,12 +921,12 @@ func (intrfc *intrfcStruct) addTrace(label string, nm *NetworkMsg, t float64) {
 	si.ThruIngress = intrfc.State.ThruIngress[flwID]
 	si.ToEgress = intrfc.State.ToEgress[flwID]
 	si.ThruEgress = intrfc.State.ThruEgress[flwID]
-	
-	si.NetMsgType = nm.NetMsgType	
+
+	si.NetMsgType = nm.NetMsgType
 	si.PrArrvl = nm.PrArrvl
 	si.Time = t
 	siStr := si.Serialize()
-	siStr = strings.Replace(siStr,"\n"," ",-1)
+	siStr = strings.Replace(siStr, "\n", " ", -1)
 	fmt.Println(label, siStr)
 }
 
@@ -1001,12 +1009,20 @@ func linkIntrfcStruct(intrfcDesc *IntrfcDesc) {
 
 	// in IntrfcDesc the 'Cable' field is a string, holding the name of the target interface
 	if len(intrfcDesc.Cable) > 0 {
+		_, present := IntrfcByName[intrfcDesc.Cable]
+		if !present {
+			panic(fmt.Errorf("intrfc cable connection goof"))
+		}
 		is.Cable = IntrfcByName[intrfcDesc.Cable]
 	}
 
 	// in IntrfcDesc the 'Cable' field is a string, holding the name of the target interface
 	if len(intrfcDesc.Carry) > 0 {
 		for _, cintrfcName := range intrfcDesc.Carry {
+			_, present := IntrfcByName[cintrfcName]
+			if !present {
+				panic(fmt.Errorf("intrfc cable connection goof"))
+			}
 			is.Carry = append(is.Carry, IntrfcByName[cintrfcName])
 		}
 	}
@@ -1049,7 +1065,7 @@ func (intrfc *intrfcStruct) IsCongested(ingress bool) bool {
 	if ingress {
 		for _, rate := range intrfc.State.ToIngress {
 			usedBndwdth += rate
-		}	
+		}
 	} else {
 		for _, rate := range intrfc.State.ToEgress {
 			usedBndwdth += rate
@@ -1059,7 +1075,7 @@ func (intrfc *intrfcStruct) IsCongested(ingress bool) bool {
 	// !( bandwidth for elastic flows < available bandwidth for elastic flows ) ==
 	// !( usedBndwdth-fixedBndwdth < intrfc.State.Bndwdth-fixedBndwdth )
 	// !( usedBndwdth < intrfc.State.Bndwdth )
-	// 
+	//
 	useable := intrfc.useableBW()
 	if usedBndwdth < useable && !(math.Abs(usedBndwdth-useable) < 1e-3) {
 		return false
@@ -1067,25 +1083,25 @@ func (intrfc *intrfcStruct) IsCongested(ingress bool) bool {
 	return true
 }
 
-// ChgFlowRate is called in the midst of changing the flow rates. 
+// ChgFlowRate is called in the midst of changing the flow rates.
 // The rate value 'rate' is one that flow has at this point in the
 // computation, and the per-flow interface data structures are adjusted
 // to reflect that
-func (intrfc *intrfcStruct) ChgFlowRate(flowID int, classID int, rate float64, ingress bool ) {
+func (intrfc *intrfcStruct) ChgFlowRate(flowID int, classID int, rate float64, ingress bool) {
 	cg := intrfc.State.priQueue.getClassQueue(classID, ingress)
 	if ingress {
 		oldRate := intrfc.State.ToIngress[flowID]
-		intrfc.State.ToIngress[flowID]   = rate
+		intrfc.State.ToIngress[flowID] = rate
 		intrfc.State.ThruIngress[flowID] = rate
-		intrfc.State.IngressLambda += (rate-oldRate)
-		cg.ingressLambda += (rate-oldRate)
-	
+		intrfc.State.IngressLambda += (rate - oldRate)
+		cg.ingressLambda += (rate - oldRate)
+
 	} else {
 		oldRate := intrfc.State.ToEgress[flowID]
 		intrfc.State.ToEgress[flowID] = rate
 		intrfc.State.ThruEgress[flowID] = rate
-		intrfc.State.EgressLambda += (rate-oldRate)
-		cg.egressLambda += (rate-oldRate)
+		intrfc.State.EgressLambda += (rate - oldRate)
+		cg.egressLambda += (rate - oldRate)
 	}
 }
 
@@ -1099,14 +1115,14 @@ func (intrfc *intrfcStruct) RmFlow(flowID int, classID int, rate float64, ingres
 
 		// need have the removed flow's prior rate
 		oldRate := cg.ingressLambda
-		cg.ingressLambda = oldRate-rate
+		cg.ingressLambda = oldRate - rate
 	} else {
 		delete(intrfc.State.ToEgress, flowID)
 		delete(intrfc.State.ThruEgress, flowID)
 
 		// need have the removed flow's prior rate
 		oldRate := cg.egressLambda
-		cg.egressLambda = oldRate-rate
+		cg.egressLambda = oldRate - rate
 	}
 }
 
@@ -1126,36 +1142,35 @@ type networkStruct struct {
 // A networkState struct holds some static and dynamic information about the network's current state
 type networkState struct {
 	Latency  float64 // latency through network (without considering explicitly declared wired connections) under no load
-	Bndwdth  float64 // 
+	Bndwdth  float64 //
 	Capacity float64 // maximum traffic capacity of network
 	Trace    bool    // switch for calling trace saving
 	Drop     bool    // switch for dropping packets with random sampling
 	Rngstrm  *rngstream.RngStream
 
-	ClassID	   map[int]int			// map of flow ID to reservation ID
-	ClassBndwdth  map[int]float64	// map of reservation ID to reserved bandwidth
-	
-	PcktClass	 float64
-	BckgrndBW    float64
+	ClassID      map[int]int     // map of flow ID to reservation ID
+	ClassBndwdth map[int]float64 // map of reservation ID to reserved bandwidth
+
+	PcktClass float64
+	BckgrndBW float64
 	// revisit
-	Flows    map[int]ActiveRec 
-	Forward  map[int]map[intrfcIDPair]float64
+	Flows   map[int]ActiveRec
+	Forward map[int]map[intrfcIDPair]float64
 
-	Load     float64           // real-time value of total load (in units of Mbytes/sec)
-	Packets  int               // number of packets actively passing in network
+	Load    float64 // real-time value of total load (in units of Mbytes/sec)
+	Packets int     // number of packets actively passing in network
 }
-
 
 // AddFlow updates a networkStruct's data structures to add
 // a major flow
 func (ns *networkStruct) AddFlow(flowID int, classID int, ifcpr intrfcIDPair) {
 	_, present := ns.NetState.Flows[flowID]
 	if !present {
-		ns.NetState.Flows[flowID] = ActiveRec{Number:0, Rate: 0.0}
+		ns.NetState.Flows[flowID] = ActiveRec{Number: 0, Rate: 0.0}
 	}
 	ar := ns.NetState.Flows[flowID]
 	ar.Number += 1
-	ns.NetState.Flows[flowID] = ar	
+	ns.NetState.Flows[flowID] = ar
 	ns.NetState.Forward[flowID] = make(map[intrfcIDPair]float64)
 	ns.NetState.Forward[flowID][ifcpr] = 0.0
 }
@@ -1173,7 +1188,7 @@ func (ns *networkStruct) RmFlow(flowID int, ifcpr intrfcIDPair) {
 		delete(ns.NetState.Flows, flowID)
 		delete(ns.NetState.Forward, flowID)
 	} else {
-		ns.NetState.Flows[flowID] = ar	
+		ns.NetState.Flows[flowID] = ar
 	}
 }
 
@@ -1188,16 +1203,16 @@ func (ns *networkStruct) ChgFlowRate(flowID int, ifcpr intrfcIDPair, rate float6
 		oldRate = 0.0
 	}
 
-	// compute the change of rate and add the change to the variables 
+	// compute the change of rate and add the change to the variables
 	// that accumulate the rates
-	deltaRate := rate-oldRate
+	deltaRate := rate - oldRate
 
 	ar := ns.NetState.Flows[flowID]
 	ar.Rate += deltaRate
 	ns.NetState.Flows[flowID] = ar
 
 	// save the new rate
-	ns.NetState.Forward[flowID][ifcpr] = rate	
+	ns.NetState.Forward[flowID][ifcpr] = rate
 }
 
 // determine whether the network state between the source and destination interfaces is congested,
@@ -1207,9 +1222,9 @@ func (ns *networkStruct) IsCongested(srcIntrfc, dstIntrfc *intrfcStruct) bool {
 
 	// gather the fixed bandwdth for the source
 	usedBndwdth := math.Min(srcIntrfc.State.RsrvdFrac*srcIntrfc.State.Bndwdth,
-						dstIntrfc.State.RsrvdFrac*dstIntrfc.State.Bndwdth)
+		dstIntrfc.State.RsrvdFrac*dstIntrfc.State.Bndwdth)
 
-	seenFlows := make(map[int]bool)	
+	seenFlows := make(map[int]bool)
 	for flwID, rate := range srcIntrfc.State.ThruEgress {
 		usedBndwdth += rate
 		seenFlows[flwID] = true
@@ -1226,7 +1241,7 @@ func (ns *networkStruct) IsCongested(srcIntrfc, dstIntrfc *intrfcStruct) bool {
 	if usedBndwdth < netuseableBW && !(math.Abs(usedBndwdth-netuseableBW) < 1e-3) {
 		return false
 	}
-	return true	
+	return true
 }
 
 // initNetworkStruct transforms information from the desc description
@@ -1285,12 +1300,12 @@ func createNetworkStruct(nd *NetworkDesc) *networkStruct {
 	ns.NetEndpts = make([]*endptDev, 0)
 
 	// make the state structure, will flesh it out from run-time configuration parameters
-	// ns.NetState = createNetworkState(ns.Name)
+	ns.NetState = createNetworkState(ns.Name)
 	return ns
 }
 
-func (net *networkStruct) useableBW() float64 {
-	return net.NetState.Bndwdth-net.NetState.BckgrndBW
+func (ns *networkStruct) useableBW() float64 {
+	return ns.NetState.Bndwdth - ns.NetState.BckgrndBW
 }
 
 // createNetworkState constructs the data for a networkState struct
@@ -1314,9 +1329,9 @@ func (ns *networkStruct) NetLatency(nm *NetworkMsg) float64 {
 	lambda := ns.channelLoad(nm)
 
 	// compute the service mean
-	srv := (float64(nm.MsgLen*8)/1e6)/ns.NetState.Bndwdth
+	srv := (float64(nm.MsgLen*8) / 1e6) / ns.NetState.Bndwdth
 
-	rho := lambda*srv
+	rho := lambda * srv
 	inSys := srv + rho/(2*(1.0/srv)*(1-rho))
 	return ns.NetState.Latency + inSys
 }
@@ -1418,39 +1433,41 @@ func (ns *networkStruct) channelLoad(nm *NetworkMsg) float64 {
 	rtStep := (*nm.Route)[nm.StepIdx]
 	srcIntrfc := IntrfcByID[rtStep.srcIntrfcID]
 	dstIntrfc := IntrfcByID[rtStep.dstIntrfcID]
-	return srcIntrfc.State.EgressLambda+dstIntrfc.State.IngressLambda
+	return srcIntrfc.State.EgressLambda + dstIntrfc.State.IngressLambda
 }
 
 // PcktDrop returns the packet drop bit for the network
 func (ns *networkStruct) PcktDrop() bool {
 	return ns.NetState.Drop
-}	
+}
 
 // a endptDev holds information about a endpt
 type endptDev struct {
-	EndptName    string   // unique name
-	EndptGroups  []string // list of groups to which endpt belongs
-	EndptModel   string   // model of CPU the endpt uses
-	EndptCores   int
-	EndptSched   *TaskScheduler  // shares an endpoint's cores among computing tasks
-	EndptID      int             // unique integer id
-	EndptIntrfcs []*intrfcStruct // list of network interfaces embedded in the endpt
-	EndptState   *endptState     // a struct holding endpt state
+	EndptName       string   // unique name
+	EndptGroups     []string // list of groups to which endpt belongs
+	EndptModel      string   // model of CPU the endpt uses
+	EndptCores      int
+	EndptSched      *TaskScheduler            // shares an endpoint's cores among computing tasks
+	EndptAccelSched map[string]*TaskScheduler // map of accelerators, indexed by type name
+	EndptAccelModel map[string]string         // accel device name on endpoint mapped to device model for timing
+	EndptID         int                       // unique integer id
+	EndptIntrfcs    []*intrfcStruct           // list of network interfaces embedded in the endpt
+	EndptState      *endptState               // a struct holding endpt state
 }
 
 // a endptState holds extra informat used by the endpt
 type endptState struct {
 	Rngstrm *rngstream.RngStream // pointer to a random number generator
 	Trace   bool                 // switch for calling add trace
-	Drop	bool				 // whether to support packet drops at interface
+	Drop    bool                 // whether to support packet drops at interface
 	Active  map[int]float64
 	Load    float64
 	Forward DFS
 	Packets int
 
 	BckgrndRate float64
-	BckgrndSrv float64
-	BckgrndIdx int
+	BckgrndSrv  float64
+	BckgrndIdx  int
 }
 
 // matchParam is for other paramObj objects a method for seeing whether
@@ -1479,6 +1496,8 @@ func (endpt *endptDev) setParam(param string, value valueStruct) {
 		endpt.EndptState.Trace = value.boolValue
 	case "model":
 		endpt.EndptModel = value.stringValue
+	case "cores":
+		endpt.EndptCores = value.intValue
 	case "bckgrndRate":
 		endpt.EndptState.BckgrndRate = value.floatValue
 	case "bckgrndSrv":
@@ -1497,10 +1516,31 @@ func createEndptDev(endptDesc *EndptDesc) *endptDev {
 	endpt.EndptName = endptDesc.Name // unique name
 	endpt.EndptModel = endptDesc.Model
 	endpt.EndptCores = endptDesc.Cores
-	endpt.EndptID = nxtID()                       // unique integer id, generated at model load-time
-	// endpt.EndptState = createEndptState(endpt.EndptName)
+	endpt.EndptID = nxtID() // unique integer id, generated at model load-time
+	endpt.EndptState = createEndptState(endpt.EndptName)
 	endpt.EndptIntrfcs = make([]*intrfcStruct, 0) // initialization of list of interfaces, to be augmented later
-	endpt.EndptGroups = endptDesc.Groups
+
+	endpt.EndptGroups = make([]string, len(endptDesc.Groups))
+	copy(endpt.EndptGroups, endptDesc.Groups)
+
+	endpt.EndptAccelSched = make(map[string]*TaskScheduler)
+	endpt.EndptAccelModel = make(map[string]string)
+
+	var accelName string
+	accelCores := 1
+	for accelCode, accelModel := range endptDesc.Accel {
+		// if there is a "," split out the accelerator name and number of cores
+		if strings.Contains(accelCode, ",") {
+			pieces := strings.Split(accelCode, ",")
+			accelName = pieces[0]
+			accelCores, _ = strconv.Atoi(pieces[1])
+		} else {
+			accelName = accelCode
+		}
+		endpt.EndptAccelModel[accelName] = accelModel
+		endpt.EndptAccelSched[accelName] = CreateTaskScheduler(accelCores)
+	}
+	AccelSchedulersByHostName[endpt.EndptName] = endpt.EndptAccelSched
 	return endpt
 }
 
@@ -1516,18 +1556,18 @@ func createEndptState(name string) *endptState {
 
 	// default, nothing happens
 	eps.BckgrndRate = 0.0
-	eps.BckgrndSrv  = 0.0
+	eps.BckgrndSrv = 0.0
 	return eps
 }
 
 // initTaskScheduler calls CreateTaskScheduler to create
 // the logic for incorporating the impacts of parallel cores
-// on execution time 
+// on execution time
 func (endpt *endptDev) initTaskScheduler() {
 	scheduler := CreateTaskScheduler(endpt.EndptCores)
 	endpt.EndptSched = scheduler
 	// remove if already present
-	delete(TaskSchedulerByHostName, endpt.EndptName)	
+	delete(TaskSchedulerByHostName, endpt.EndptName)
 	TaskSchedulerByHostName[endpt.EndptName] = scheduler
 }
 
@@ -1587,17 +1627,21 @@ func (endpt *endptDev) DevAddActive(nme *NetworkMsg) {
 	endpt.EndptState.Active[nme.ConnectID] = nme.Rate
 }
 
-// devRmActive removes an active connection, as part of the TopoDev interface.  Not used for endpts, yet
+// DevRmActive removes an active connection, as part of the TopoDev interface.  Not used for endpts, yet
 func (endpt *endptDev) DevRmActive(connectID int) {
 	delete(endpt.EndptState.Active, connectID)
 }
 
-// devDelay returns the state-dependent delay for passage through the device, as part of the TopoDev interface.
+// DevDelay returns the state-dependent delay for passage through the device, as part of the TopoDev interface.
 // Not really applicable to endpt, so zero is returned
-func (endpt *endptDev) DevDelay(arg any) float64 {
+func (endpt *endptDev) DevDelay(arg any, msgLen int) float64 {
 	return 0.0
 }
 
+// DevIsSimple states that the endpoint is not simple
+func (endpt *endptDev) DevIsSimple() bool {
+	return false
+}
 
 // The switchDev struct holds information describing a run-time representation of a switch
 type switchDev struct {
@@ -1611,15 +1655,16 @@ type switchDev struct {
 
 // The switchState struct holds auxiliary information about the switch
 type switchState struct {
-	Rngstrm *rngstream.RngStream // pointer to a random number generator
-	Trace   bool                 // switch for calling trace saving
-	Drop    bool                 // switch to allow dropping packets
-	Active  map[int]float64
-	Load    float64
-	BufferSize  float64
-	Capacity float64
-	Forward DFS
-	Packets int
+	Rngstrm    *rngstream.RngStream // pointer to a random number generator
+	Trace      bool                 // switch for calling trace saving
+	Drop       bool                 // switch to allow dropping packets
+	Simple     bool                 // simple switches use a constant to transfer through
+	Active     map[int]float64
+	Load       float64
+	BufferSize float64
+	Capacity   float64
+	Forward    DFS
+	Packets    int
 }
 
 // createSwitchDev is a constructor, initializing a run-time representation of a switch from its desc description
@@ -1630,7 +1675,13 @@ func createSwitchDev(switchDesc *SwitchDesc) *switchDev {
 	swtch.SwitchID = nxtID()
 	swtch.SwitchIntrfcs = make([]*intrfcStruct, 0)
 	swtch.SwitchGroups = switchDesc.Groups
-	// swtch.SwitchState = createSwitchState(swtch.SwitchName)
+	swtch.SwitchState = createSwitchState(swtch.SwitchName)
+
+	if switchDesc.Simple == 1 {
+		swtch.SwitchState.Simple = true
+	} else {
+		swtch.SwitchState.Simple = false
+	}
 	return swtch
 }
 
@@ -1658,7 +1709,7 @@ func (swtch *switchDev) addForward(flowID int, idp intrfcIDPair) {
 }
 
 // rmForward removes a flowID from the switch's forwarding table
-func (swtch *switchDev) rmForward(flowID int) { 
+func (swtch *switchDev) rmForward(flowID int) {
 	delete(swtch.SwitchState.Forward, flowID)
 }
 
@@ -1693,6 +1744,8 @@ func (swtch *switchDev) setParam(param string, value valueStruct) {
 		swtch.SwitchState.Trace = value.boolValue
 	case "drop":
 		swtch.SwitchState.Drop = value.boolValue
+	case "simple":
+		swtch.SwitchState.Simple = value.boolValue
 	}
 }
 
@@ -1747,10 +1800,12 @@ func (swtch *switchDev) DevRmActive(connectID int) {
 }
 
 // devDelay returns the state-dependent delay for passage through the switch, as part of the TopoDev interface.
-func (swtch *switchDev) DevDelay(msg any) float64 {
-	delay := passThruDelay("switch", swtch.SwitchModel)
-	// N.B. we could put load-dependent scaling factor here
-	return delay
+func (swtch *switchDev) DevDelay(msg any, msgLen int) float64 {
+	return passThruDelay("switch", swtch.SwitchModel, msgLen)
+}
+
+func (swtch *switchDev) DevIsSimple() bool {
+	return swtch.SwitchState.Simple
 }
 
 // LogNetEvent satisfies TopoDev interface
@@ -1775,7 +1830,8 @@ type routerDev struct {
 type routerState struct {
 	Rngstrm *rngstream.RngStream // pointer to a random number generator
 	Trace   bool                 // switch for calling trace saving
-	Drop    bool				 // switch to allow dropping packets
+	Drop    bool                 // switch to allow dropping packets
+	Simple  bool                 // use a simple constant for transfer
 	Active  map[int]float64
 	Load    float64
 	Buffer  float64
@@ -1791,7 +1847,13 @@ func createRouterDev(routerDesc *RouterDesc) *routerDev {
 	router.RouterID = nxtID()
 	router.RouterIntrfcs = make([]*intrfcStruct, 0)
 	router.RouterGroups = routerDesc.Groups
-	// router.RouterState = createRouterState(router.RouterName)
+	router.RouterState = createRouterState(router.RouterName)
+
+	if routerDesc.Simple == 1 {
+		router.RouterState.Simple = true
+	} else {
+		router.RouterState.Simple = false
+	}
 	return router
 }
 
@@ -1800,7 +1862,7 @@ func createRouterState(name string) *routerState {
 	rs := new(routerState)
 	rs.Active = make(map[int]float64)
 	rs.Load = 0.0
-	rs.Buffer = math.MaxFloat64/2.0
+	rs.Buffer = math.MaxFloat64 / 2.0
 	rs.Packets = 0
 	rs.Trace = false
 	rs.Drop = false
@@ -1810,8 +1872,8 @@ func createRouterState(name string) *routerState {
 }
 
 // DevForward returns the router's forwarding table
-func (rs *routerDev) DevForward() DFS {
-	return rs.RouterState.Forward
+func (router *routerDev) DevForward() DFS {
+	return router.RouterState.Forward
 }
 
 // addForward adds an flowID entry to the router's forwarding table
@@ -1820,10 +1882,9 @@ func (router *routerDev) addForward(flowID int, idp intrfcIDPair) {
 }
 
 // rmForward removes a flowID from the router's forwarding table
-func (router *routerDev) rmForward(flowID int) { 
+func (router *routerDev) rmForward(flowID int) {
 	delete(router.RouterState.Forward, flowID)
 }
-
 
 // matchParam is used to determine whether a run-time parameter description
 // should be applied to the router. Its definition here helps switchDev satisfy
@@ -1854,6 +1915,10 @@ func (router *routerDev) setParam(param string, value valueStruct) {
 		router.RouterState.Buffer = value.floatValue
 	case "trace":
 		router.RouterState.Trace = value.boolValue
+	case "drop":
+		router.RouterState.Drop = value.boolValue
+	case "simple":
+		router.RouterState.Simple = value.boolValue
 	}
 }
 
@@ -1916,9 +1981,13 @@ func (router *routerDev) DevRmActive(connectID int) {
 }
 
 // DevDelay returns the state-dependent delay for passage through the router, as part of the TopoDev interface.
-func (router *routerDev) DevDelay(msg any) float64 {
-	delay := passThruDelay("route", router.RouterModel)
-	return delay
+func (router *routerDev) DevDelay(msg any, msgLen int) float64 {
+	return passThruDelay("route", router.RouterModel, msgLen)
+}
+
+// DevIsSimple returns the bit indicating whether the router is simple
+func (router *routerDev) DevIsSimple() bool {
+	return router.RouterState.Simple
 }
 
 // The intrfcsToDev struct describes a connection to a device.  Used in route descriptions
@@ -1936,20 +2005,20 @@ type intrfcsToDev struct {
 type NetworkMsg struct {
 	StepIdx    int             // position within the route from source to destination
 	Route      *[]intrfcsToDev // pointer to description of route
-	Connection  ConnDesc 	   // {DiscreteConn, MajorFlowConn, MinorFlowConn}
-	ExecID	   int
-	FlowID     int             // flow id given by app at entry
-	ClassID    int			   // if > 0 means the message uses that reservation
-	ConnectID  int             // connection identifier
-	NetMsgType NetworkMsgType  // enum type packet, 
-	PcktRate	float64        // if ClassID>0, the class arrival rate. Otherwise from source
-	Rate       float64		   // flow rate if FlowID >0 (meaning a flow)
-	StartTime  float64		   // simuation time when the message entered the network
-	PrArrvl    float64         // probablity of arrival
-	MsgLen     int             // length of the entire message, in Mbytes
-	PcktIdx	   int			   // index of packet with msg
-	NumPckts   int			   // number of packets in the message this is part of
-	Msg        any             // message being carried.
+	Connection ConnDesc        // {DiscreteConn, MajorFlowConn, MinorFlowConn}
+	ExecID     int
+	FlowID     int            // flow id given by app at entry
+	ClassID    int            // if > 0 means the message uses that reservation
+	ConnectID  int            // connection identifier
+	NetMsgType NetworkMsgType // enum type packet,
+	PcktRate   float64        // if ClassID>0, the class arrival rate. Otherwise from source
+	Rate       float64        // flow rate if FlowID >0 (meaning a flow)
+	StartTime  float64        // simuation time when the message entered the network
+	PrArrvl    float64        // probablity of arrival
+	MsgLen     int            // length of the entire message, in Mbytes
+	PcktIdx    int            // index of packet with msg
+	NumPckts   int            // number of packets in the message this is part of
+	Msg        any            // message being carried.
 }
 
 // carriesPckt returns a boolean indicating whether the message is a packet (verses flow)
@@ -2011,8 +2080,8 @@ func transitDelay(nm *NetworkMsg) (float64, *networkStruct) {
 	return delay, net
 }
 
-// dstBndwdth returns the receiving bandwidth of the destination interface, considering 
-// slow-down due to congestion 
+// dstBndwdth returns the receiving bandwidth of the destination interface, considering
+// slow-down due to congestion
 func dstBndwdth(nm *NetworkMsg) float64 {
 
 	// recover the interfaces themselves and the network between them, if any
@@ -2020,8 +2089,8 @@ func dstBndwdth(nm *NetworkMsg) float64 {
 
 	if srcIntrfc.Cable != nil {
 		return dstIntrfc.useableBW()
-	} 
-	return dstIntrfc.useableBW() - dstIntrfc.State.IngressLambda	
+	}
+	return dstIntrfc.useableBW() - dstIntrfc.State.IngressLambda
 }
 
 // enterEgressIntrfc handles the arrival of a packet to the egress interface side of a device.
@@ -2038,7 +2107,7 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	intrfc.State.priQueue.addClassID(classID, false)
 
 	// message length in Mbits
-	msgLen := float64(8*nm.MsgLen)/1e+6
+	msgLen := float64(8*nm.MsgLen) / 1e+6
 
 	nowInSecs := evtMgr.CurrentSeconds()
 
@@ -2050,7 +2119,7 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	// see if a frame is being transmitted right now
 	if !intrfc.State.EgressTransit {
 		// no frames in transit through the interface so we can start one
-		schedTransmissionComplete(evtMgr, intrfc, nm, msgLen) 
+		schedTransmissionComplete(evtMgr, intrfc, nm, msgLen)
 	} else {
 		// put the frame in queue to await selection
 		cpyNm := new(NetworkMsg)
@@ -2061,14 +2130,14 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 }
 
 // exitEgressIntrfc implements an event handler for the completed departure of a message from an interface.
-// It determines the time-through-network and destination of the message, and schedules the recognition 
+// It determines the time-through-network and destination of the message, and schedules the recognition
 // of the message at the ingress interface
 func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any {
 	intrfc := egressIntrfc.(*intrfcStruct)
 	nm := msg.(NetworkMsg)
 
 	// express message length in Mbits
-	msgLen := float64(8*nm.MsgLen)/1e6
+	msgLen := float64(8*nm.MsgLen) / 1e6
 
 	// compute transmission time through the interface
 	// departSrv := (float64(8*nm.MsgLen)/1e+6)/intrfc.State.Bndwdth
@@ -2103,14 +2172,20 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	// msgLen/minBW ago, so netDelay + msgLen/minBW is the time when the last bit passes through
 	// the next ingress interface
 	// recover bandwidth used to push frame out (no faster than can be received)
-	thruIntrfc := msgLen/intrfc.State.end2endBW
-	evtMgr.Schedule(nxtIntrfc, nm, arriveIngressIntrfc, vrtime.SecondsToTime(netDelay+thruIntrfc))
+	thruIntrfc := msgLen / intrfc.State.end2endBW
+
+	// what we schedule depends on whether the destination device is simple or not
+	if nxtIntrfc.Device.DevIsSimple() {
+		evtMgr.Schedule(nxtIntrfc, nm, arriveSimpleDev, vrtime.SecondsToTime(netDelay))
+	} else {
+		evtMgr.Schedule(nxtIntrfc, nm, arriveIngressIntrfc, vrtime.SecondsToTime(netDelay+thruIntrfc))
+	}
 
 	// we're done with the completed transmission
 	intrfc.State.EgressTransit = false
 	// sample the probability of a successful transition and packet drop
 	// potentially drop the message
-	if (intrfc.Cable == nil || intrfc.Media != Wired) {
+	if intrfc.Cable == nil || intrfc.Media != Wired {
 
 		// get aggregate accepted arrival rate of flows from within the device to the egress interface
 		lambda := intrfc.State.EgressLambda
@@ -2120,26 +2195,25 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 
 		// estimated number of messages of this size that 'fit' in the network channel with
 		// a time length of netDelay
-		N := int(math.Round(netDelay*lambda*1e+6/m))
-	
-		// estimate packet loss via M/M/1 formula (N.B. need to change this to M/D/1 queue formula)	
+		N := int(math.Round(netDelay * lambda * 1e+6 / m))
+
+		// estimate packet loss via M/M/1 formula (N.B. need to change this to M/D/1 queue formula)
 		prDrop := estPrDrop(lambda, net.NetState.Bndwdth, N)
-		nm.PrArrvl *= (1.0-prDrop)
+		nm.PrArrvl *= (1.0 - prDrop)
 
 		// if configured to drop packets, sample a uniform 0,1, if less than prDrop then drop the packet
 		if net.PcktDrop() && (intrfc.Device.DevRng().RandU01() < prDrop) {
 			// dropping packet
-			// there is some logic for dealing with packet loss	
+			// there is some logic for dealing with packet loss
 			return nil
 		}
 	}
 
-
 	// if there is another message awaiting at the entrance pull it in
 	nxtMsg := intrfc.State.priQueue.nxtNetworkMsg(intrfc, false)
 	if nxtMsg != nil {
-		schedTransmissionComplete(evtMgr, intrfc, nm, msgLen) 
-	}	
+		schedTransmissionComplete(evtMgr, intrfc, nm, msgLen)
+	}
 
 	// event-handlers are required to return _something_
 	return nil
@@ -2147,27 +2221,82 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 
 func schedTransmissionComplete(evtMgr *evtm.EventManager, intrfc *intrfcStruct, nm NetworkMsg, msgLen float64) {
 
-		priQueue := intrfc.State.priQueue
+	priQueue := intrfc.State.priQueue
 
-		// get the local bandwidth (slowed by higher priority flow rates)
-		egressBW := priQueue.transferBW(nm.ClassID, msgLen, intrfc, false)
+	// get the local bandwidth (slowed by higher priority flow rates)
+	egressBW := priQueue.transferBW(nm.ClassID, msgLen, intrfc, false)
 
-		// get the available bandwidth at the destination interface
-		dstBW := dstBndwdth(&nm)
+	// get the available bandwidth at the destination interface
+	dstBW := dstBndwdth(&nm)
 
-		// take the minimum and remember it on this interface
-		minBW := math.Min(egressBW, dstBW)
-		intrfc.State.end2endBW = minBW
+	// take the minimum and remember it on this interface
+	minBW := math.Min(egressBW, dstBW)
+	intrfc.State.end2endBW = minBW
 
-		// the local interface won't push it out any faster than the destination will absorb it
-		// so we work with the minimum bandwidth of the two
-		thruIntrfc := msgLen/minBW
+	// the local interface won't push it out any faster than the destination will absorb it
+	// so we work with the minimum bandwidth of the two
+	thruIntrfc := msgLen / minBW
 
-		// schedule exitEgressIntrfc to execute after the frame has been transmitted
-		evtMgr.Schedule(intrfc, nm, exitEgressIntrfc, vrtime.SecondsToTime(thruIntrfc))
+	// schedule exitEgressIntrfc to execute after the frame has been transmitted
+	evtMgr.Schedule(intrfc, nm, exitEgressIntrfc, vrtime.SecondsToTime(thruIntrfc))
 
-		// keep other transmissions from happening here
-		intrfc.State.EgressTransit = true
+	// keep other transmissions from happening here
+	intrfc.State.EgressTransit = true
+}
+
+// arriveSimple handles the arrival of a message at a switch or router that is 'simple',
+// meaning its delay is just some measurement that is called up for use
+func arriveSimpleDev(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) any {
+	nm := msg.(NetworkMsg)
+	intrfc := ingressIntrfc.(*intrfcStruct)
+	intrfc.LogNetEvent(evtMgr.CurrentTime(), &nm, "enter")
+	intrfc.PrmDev.LogNetEvent(evtMgr.CurrentTime(), &nm, "enter")
+	AddIntrfcTrace(devTraceMgr, evtMgr.CurrentTime(), nm.ExecID, intrfc.Number, "arriveSimpleDev",
+		intrfc.State.priQueue.Str())
+	netDevType := intrfc.Device.DevType()
+
+	// if the device is an endpoint deliver the message
+	device := intrfc.Device
+	devCode := device.DevType()
+	if devCode == EndptCode {
+		// schedule return into comp pattern system, where requested
+		ActivePortal.Depart(evtMgr, nm)
+		return nil
+	}
+
+	// estimate the probability of dropping the packet on the way out
+	if netDevType == RouterCode || netDevType == SwitchCode {
+		nxtIntrfc := IntrfcByID[(*nm.Route)[nm.StepIdx+1].srcIntrfcID]
+		buffer := nxtIntrfc.State.BufferSize                     // buffer size in Mbytes
+		N := int(math.Round(buffer * 1e+6 / float64(nm.MsgLen))) // buffer length in Mbytes
+		lambda := intrfc.State.IngressLambda
+		prDrop := estPrDrop(lambda, intrfc.State.Bndwdth, N)
+		nm.PrArrvl *= (1.0 - prDrop)
+	}
+
+	// get the simple delay through the device
+	delay := device.DevDelay(msg, nm.MsgLen)
+
+	// get the delay through the network
+	netDelay, _ := transitDelay(&nm)
+
+	// advance along the route to the
+	nm.StepIdx += 1
+	nxtIntrfc := IntrfcByID[(*nm.Route)[nm.StepIdx].dstIntrfcID]
+
+	// the handler we schedule depends on whether the device is simple or not
+	if nxtIntrfc.Device.DevIsSimple() {
+		evtMgr.Schedule(nxtIntrfc, nm, arriveSimpleDev, vrtime.SecondsToTime(delay+netDelay))
+		return nil
+	}
+
+	// next device is not simple so we include a bandwidth limiting component
+	dstBW := dstBndwdth(&nm)
+	egressBW := nxtIntrfc.State.Bndwdth - nxtIntrfc.State.BckgrndBW
+	minBW := math.Min(egressBW, dstBW)
+	thruIntrfc := float64(8*nm.MsgLen) / (minBW * 1e6)
+	evtMgr.Schedule(nxtIntrfc, nm, arriveIngressIntrfc, vrtime.SecondsToTime(delay+netDelay+thruIntrfc))
+	return nil
 }
 
 // arriveIngressIntrfc implements the event-handler for the entry of a frame
@@ -2183,6 +2312,7 @@ func arriveIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) 
 	intrfc.PrmDev.LogNetEvent(evtMgr.CurrentTime(), &nm, "enter")
 	AddIntrfcTrace(devTraceMgr, evtMgr.CurrentTime(), nm.ExecID, intrfc.Number, "enterIngress", intrfc.State.priQueue.Str())
 	netDevType := intrfc.Device.DevType()
+	msgLen := float64(nm.MsgLen)
 
 	// cast data argument to network message
 
@@ -2191,8 +2321,9 @@ func arriveIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) 
 	intrfc.addTrace("arriveIngressIntrfc", &nm, nowInSecs)
 
 	// if this device is an endpoint, the message gets passed up to it
-	devCode := intrfc.Device.DevType()
-	devName := intrfc.Device.DevName()
+	device := intrfc.Device
+	devCode := device.DevType()
+	devName := device.DevName()
 	if devCode == EndptCode {
 		// schedule return into comp pattern system, where requested
 		ActivePortal.Depart(evtMgr, nm)
@@ -2200,36 +2331,40 @@ func arriveIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) 
 	}
 
 	// estimate the probability of dropping the packet on the way out
-	if (netDevType == RouterCode || netDevType == SwitchCode) {
+	if netDevType == RouterCode || netDevType == SwitchCode {
 		nxtIntrfc := IntrfcByID[(*nm.Route)[nm.StepIdx+1].srcIntrfcID]
-		buffer := nxtIntrfc.State.BufferSize					// buffer size in Mbytes
-		N := int(math.Round(buffer*1e+6/float64(nm.MsgLen)))    // buffer length in Mbytes
+		buffer := nxtIntrfc.State.BufferSize                     // buffer size in Mbytes
+		N := int(math.Round(buffer * 1e+6 / float64(nm.MsgLen))) // buffer length in Mbytes
 		lambda := intrfc.State.IngressLambda
 		prDrop := estPrDrop(lambda, intrfc.State.Bndwdth, N)
-		nm.PrArrvl *= (1.0-prDrop)
+		nm.PrArrvl *= (1.0 - prDrop)
 	}
 
+	// if the device (switch or router) is simple, add a delay and have the
+	// message show up at exitEgressIntrfc
+	delay := 0.0
 	// schedule arrival at the egress interface after the switching or routing time
-	var delay float64 = 0.0
 	if devCode == SwitchCode {
 		model := SwitchDevByName[devName].SwitchModel
-		delay = devExecTimeTbl["switch"][model]
+		delayModel := devExecTimeTbl["switch"][model]
+		delay = delayModel.b + delayModel.m*msgLen
 	} else if devCode == RouterCode {
 		model := RouterDevByName[devName].RouterModel
-		delay = devExecTimeTbl["route"][model]
+		delayModel := devExecTimeTbl["route"][model]
+		delay = delayModel.b + delayModel.m*msgLen
 	}
 
 	// advance position along route
-    nm.StepIdx += 1
-    nxtIntrfc := IntrfcByID[(*nm.Route)[nm.StepIdx].srcIntrfcID]
-    evtMgr.Schedule(nxtIntrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
+	nm.StepIdx += 1
+	nxtIntrfc := IntrfcByID[(*nm.Route)[nm.StepIdx].srcIntrfcID]
+	evtMgr.Schedule(nxtIntrfc, nm, enterEgressIntrfc, vrtime.SecondsToTime(delay))
 	return nil
 }
 
 // estMM1NFull estimates the probability that an M/M/1/N queue is full.
 // formula needs only the server utilization u, and the number of jobs in system, N
 func estMM1NFull(u float64, N int) float64 {
-	prFull := 1.0 / float64(N + 1)
+	prFull := 1.0 / float64(N+1)
 	if math.Abs(1.0-u) < 1e-3 {
 		prFull = (1 - u) * math.Pow(u, float64(N)) / (1 - math.Pow(u, float64(N+1)))
 	}
@@ -2237,19 +2372,19 @@ func estMM1NFull(u float64, N int) float64 {
 }
 
 // estPrDrop estimates the probability that a packet is dropped passing through a network. From the
-// function arguments it computes the server utilization and the number of 
+// function arguments it computes the server utilization and the number of
 // messages that can arrive in the delay time, computes the probability
 // of being in the 'full' state and returns that
 func estPrDrop(rate, capacity float64, N int) float64 {
-	// compute the ratio of arrival to service rate 
+	// compute the ratio of arrival to service rate
 	u := rate / capacity
 
 	// estimate number of packets that can be served as the
 	// number that can be present over the latency time,
 	// given the rate and message length.
 	//
-	// in Mbits a packet is 8 * msgLen bytes / (1e+6 bits/Mbbit) = (8*m/1e+6) Mbits 
-	// 
+	// in Mbits a packet is 8 * msgLen bytes / (1e+6 bits/Mbbit) = (8*m/1e+6) Mbits
+	//
 	// with a bandwidth of rate Mbits/sec, the rate in pckts/sec is
 	//
 	//        Mbits
@@ -2258,8 +2393,8 @@ func estPrDrop(rate, capacity float64, N int) float64 {
 	//  -----------------------  =     ------    ----
 	//                 Mbits         (8*m/1e+6)   sec
 	//    (8*m/1e+6)  ------
-	//                  pckt 
-	//				   
+	//                  pckt
+	//
 	// The number of packets that can be accepted at this rate in a period of L secs is
 	//
 	//  L * rate
@@ -2269,9 +2404,9 @@ func estPrDrop(rate, capacity float64, N int) float64 {
 	return estMM1NFull(u, N)
 }
 
-// passThruDelay returns the time it takes a device 
+// passThruDelay returns the time it takes a device
 // to perform its operation (switch or route)
-func passThruDelay(opType, model string) float64 {
+func passThruDelay(opType, model string, msgLen int) float64 {
 	if len(model) == 0 {
 		model = "Default"
 	}
@@ -2283,9 +2418,9 @@ func passThruDelay(opType, model string) float64 {
 	}
 
 	// look up the execution time for the named operation using the name
-	return devExecTimeTbl[opType][model]
+	delayModel := devExecTimeTbl[opType][model]
+	return delayModel.b + delayModel.m*float64(msgLen)
 }
-
 
 // FrameSizeCache holds previously computed minimum frame size along the route
 // for a flow whose ID is the index
@@ -2300,7 +2435,7 @@ func FindFrameSize(frameID int, rt *[]intrfcsToDev) int {
 		return FrameSizeCache[frameID]
 	}
 	frameSize := 1500
-	for _, step := range (*rt) {
+	for _, step := range *rt {
 		srcIntrfc := IntrfcByID[step.srcIntrfcID]
 		srcFrameSize := srcIntrfc.State.MTU
 		if srcFrameSize > 0 && srcFrameSize < frameSize {
@@ -2318,44 +2453,43 @@ func FindFrameSize(frameID int, rt *[]intrfcsToDev) int {
 
 // LimitingBndwdth gives the amount of available bandwidth along
 // the path between source and destination devices that has not already
-// been allocated for flows 
+// been allocated for flows
 func LimitingBndwdth(srcDevName, dstDevName string) float64 {
 	srcID := EndptDevByName[srcDevName].EndptID
 	dstID := EndptDevByName[dstDevName].EndptID
 	rt := findRoute(srcID, dstID)
-	minBndwdth := math.MaxFloat64/2.0
+	minBndwdth := math.MaxFloat64 / 2.0
 
-	for _, step := range (*rt) {
+	for _, step := range *rt {
 		srcIntrfc := IntrfcByID[step.srcIntrfcID]
 		dstIntrfc := IntrfcByID[step.dstIntrfcID]
-		var ingressEbndwdth float64 = 0.0
-		var egressEbndwdth float64 = 0.0
+		ingressEbndwdth := 0.0
+		egressEbndwdth := 0.0
 
 		for flowID, rate := range srcIntrfc.State.ToIngress {
 			if ActivePortal.Elastic[flowID] {
 				ingressEbndwdth += rate
 			}
 		}
-	
+
 		for flowID, rate := range dstIntrfc.State.ToEgress {
 			if ActivePortal.Elastic[flowID] {
 				egressEbndwdth += rate
 			}
 		}
-	
-		fixedIngressBndwdth := srcIntrfc.State.EgressLambda-egressEbndwdth
+
+		fixedIngressBndwdth := srcIntrfc.State.EgressLambda - egressEbndwdth
 		// include pre-consumed background traffic
 		fixedIngressBndwdth += srcIntrfc.State.BckgrndBW
 
-		fixedEgressBndwdth  := dstIntrfc.State.IngressLambda-ingressEbndwdth
+		fixedEgressBndwdth := dstIntrfc.State.IngressLambda - ingressEbndwdth
 		// include pre-consumed background traffic
-		fixedEgressBndwdth  += dstIntrfc.State.BckgrndBW
-			
+		fixedEgressBndwdth += dstIntrfc.State.BckgrndBW
+
 		minBndwdth = math.Min(minBndwdth, (1.0-srcIntrfc.State.RsrvdFrac)*srcIntrfc.State.Bndwdth-fixedIngressBndwdth)
 		minBndwdth = math.Min(minBndwdth, (1.0-dstIntrfc.State.RsrvdFrac)*dstIntrfc.State.Bndwdth-fixedEgressBndwdth)
-		minBndwdth = math.Max(0.0, math.Min(minBndwdth, 
+		minBndwdth = math.Max(0.0, math.Min(minBndwdth,
 			srcIntrfc.Faces.NetState.Bndwdth-(fixedIngressBndwdth+fixedEgressBndwdth)))
 	}
 	return minBndwdth
 }
-

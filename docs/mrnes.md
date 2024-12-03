@@ -1,5 +1,7 @@
 ### Multi-Resolution Network Emulator/Simulator (mrnes)
 
+(Last update December 3, 2024)
+
 #### 1. Overview
 
 The multi-resolution network emulator/simulator (**mrnes**) is a Go package for modeling communication networks.  Its level of model abstraction is considerably higher than network simulators like ns3 or OpNet, for its intended use cases emphasize speed and scale of model evaluation more than quantitative predictive accuracy.  An **mrnes** model has components that represent various kinds of entities found in a complex system: routers, bridges, routers, repeaters, hub, switches, hosts, servers, sensors.  The configuration files read in at start-up identify the components being used,  their interconnections, and performance characteristics (like bandwidth) they are assigned to have.   A **mrnes** network simulates the transition of traffic between endpoints, and models the impact that contention for resources has on that traffic.   
@@ -145,18 +147,18 @@ groups: [GROUPNAME]
 devtype: DEVTYPE
 device: DEVNAME
 cable: INTRFCNAME
-carry: INTRFCNAME
+carry: [INTRFCNAME]
 wireless: [INTRFCNAME]
 faces: NETNAME
 ```
 
-Exactly one of the values of keys `cable`, `carry`, and `wireless` attributes is non-empty.   In the case of the interface being connected to a wireless network the `wireless` list includes the names of all the interfaces also on that network that a transmission from the interface may directly reach.  If instead the interface connects to a wired network, the mrnes view is that the interface may be directly connected through a cable to some other interface, and if that is the case the `cable` attribute names that interface.   **mrnes** allows also the declaration that the media is wired, but that the level of detail in the model does not include declaration of cables and the interfaces they connect, but does allow one to name another interface on that same network to which transmissions are forwarded.  This interface is named by the value of the  `carry` key.
+Exactly one of the values of keys `cable`, `carry`, and `wireless` attributes is non-empty.   In the case of the interface being connected to a wireless network the `wireless` list includes the names of all the interfaces also on that network that a transmission from the interface may directly reach.  If instead the interface connects to a wired network, the mrnes view is that the interface may be directly connected through a cable to some other interface, and if that is the case the `cable` attribute names that interface.   **mrnes** allows also the declaration that the media is wired, but that the level of detail in the model does not include declaration of cables and the interfaces they connect, but does allow one to name another interface on that same network to which transmissions are forwarded.  A list of interfaces that are directly reachable in the same network is named by the value of the  `carry` key.
 
 Finally, the name of the network the interface touches is expressed in the value of the `faces` key.
 
 ##### 2.2 Building model files
 
-The **mrnes** package includes methods that are useful in creating the input file that describe the system topology (nominally called topo.yaml), the file that describes system performance parameters (nominally called exp.yaml0, and the file holding descriptions (nominally called devExec.yaml).  We describe these methods below.
+The **mrnes** package includes methods that are useful in creating the input file that describe the system topology (nominally called topo.yaml), the file that describes system performance parameters (nominally called exp.yaml0, and the file holding descriptions (nominally called devExec.yaml).  We describe these methods below.  In a companion document we describe how to use Excel to describe a network and have topo.yaml derived from it automatically.
 
 ###### 2.2.1 topo.yaml
 
@@ -276,9 +278,9 @@ type IntrfcFrame struct {
     // need to have media type "wired"
     Cable *IntrfcFrame
 
-    // pointer to interface (on a different device) to which this interface 
+    // slice of pointers to interface (on a different device) to which this interface 
     // is directly connected, but not through a Cable.
-    // this interface and the one pointed to need to have media type 
+    // Each interface and the one pointed to need to have media type 
     // "wired", and have "Cable" be empty
     Carry []*IntrfcFrame
 
@@ -346,11 +348,12 @@ type EndptFrame struct {
     Groups     []string
     Model      string
     Cores      int
+    Accel			 map[string]string
     Interfaces []*IntrfcFrame 
 }       
 ```
 
-The sole difference is its inclusion of a `Cores` attribute to allow a user say more about the CPU's capabilities than just the Model identifier.
+The sole difference is its inclusion of a `Cores` attribute to allow a user say more about the CPU's capabilities than just the Model identifier, and inclusion of a `Accel`dictionary to describe the presence of on-board hardware accelerators on the endpoint. 
 
 **mrnes** models may use the general Endpt structure for a variety of devices that are similar in that they have interfaces, and cores, but may have additional user-specified functionality that depends on refinement of their description.  So we offer six constructors for Endpts that differ only in a tag they include to classify the Endpt as being a 'Host', 'Node', 'Sensor', 'Srvr', 'EUD', or have no constructor at all.  Each constructor accepts as argument a name, a CPU model, and a number of cores.  The default name constructed in each case differs according to the type.
 
@@ -366,7 +369,7 @@ The sole difference is its inclusion of a `Cores` attribute to allow a user say 
 - `func (epf *EndptFrame) DevInterfaces() []*IntrfcFrame` is a method required by the `NetDev` interface and returns the slice `epf.Interfaces`. 
 - `func (epf *EndptFrame) DevAddIntrfc(iff *IntrfcFrame) error` is a method required by the `NetDev` interface and simply returns the results of a call to `epf.AddIntrfc(iff)`.
 - `func (epf *EndptFrame) Transform() EndptDesc` is called to create the representation of the endpoint that can be written to file.  It copies `epf.Name`, `epf.Groups`, `epf.Model` and `epf.Cores` directly as these are all string based, and replaces every pointer to an InterfaceFrame with the result of call the InterfaceFrame method `Transform`, the result of which is a string-based `InterfaceDesc` structure.
-- There are methods with obvious functionality to indicate whether an endpoint is a particular type, to. include a particular type in an endpoint's `Groups` list, to set and get the cores and model attributes: `func (epf *EndptFrame) SetEUD()`, `func (epf *EndptFrame) IsEUD() bool` ,` func (epf *EndptFrame) SetHost()`, `func (epf *EndptFrame) IsHost() bool`, `func (epf *EndptFrame) SetSrvr()`, `func (epf *EndptFrame) IsSrvr() bool`, `func (epf *EndptFrame) SetCores(cores int)`.
+- There are methods with obvious functionality to indicate whether an endpoint is a particular type, to. include a particular type in an endpoint's `Groups` list, to set and get the cores and model attributes: `func (epf *EndptFrame) SetEUD()`, `func (epf *EndptFrame) IsEUD() bool` ,`func(epf *EndptFreame) AddAccel()`,` func (epf *EndptFrame) SetHost()`, `func (epf *EndptFrame) IsHost() bool`, `func (epf *EndptFrame) SetSrvr()`, `func (epf *EndptFrame) IsSrvr() bool`, `func (epf *EndptFrame) SetCores(cores int)`.
 
 *Connections*
 
@@ -423,9 +426,9 @@ What interpretation then should one give to `ParamObj`, `AttribStruct`, `Param`,
 | ----------- | ------------------------------------------------------------ |
 | Network     | latency, bandwidth,  capacity, bckgrndBW, drop, trace        |
 | Interface   | latency, delay, buffer, bandwidth, bckgrndBW, MTU, rsrvd, drop, trace |
-| Endpt       | model, cores, bckgrndRate, bckgrndSrv, trace                 |
-| Switch      | model, buffer, trace                                         |
-| Router      | model, buffer, trace                                         |
+| Endpt       | model, bckgrndRate, bckgrndSrv, cores,  trace                |
+| Switch      | model, buffer, simple, drop, trace                           |
+| Router      | model, buffer, simple, drop,  trace                          |
 
 For a Network, the 'latency' parameter is the default latency for a message when transitioning between interfaces that face the given network.  A value assigned is in units of seconds. 'bandwidth' quantifies modeled point to point bandwidth across the network between two specfied interfaces, while 'capacity' describes the maximum volume of traffic the network can carry.   A modeler can specify a background traffic rate 'bckgrndBW', which serves to model the impact that otherwise unspecified background traffice has in consuming network bandwidth;  bandwidth allocated through the `bckgrndBW' parameter is not available to any other traffic in the network.  The Boolean 'drop' parameter when set allows the executing model to drop packets when model state is consistent with a drop; the default of 'drop' is false.  'trace' is a flag set when detailed trace information is desired for traffic crossing the network.  
 
@@ -433,7 +436,7 @@ For an Interface the 'latency' parameter is the time for the leading bit of a me
 
 For an endpoint the 'model' parameter refers to the endpoint  `model`  attribute in EndptDesc, used to look up function execution times for named functions that execute on that device.  'cores' identifies the number cores assumed to be in use by the CPU.  bckgrndRate' and 'bckgrndSrv' are parameters used to include the impact of background processing on the foreground applications running on the endpoint.  The meaning is that there is a stream of background tasks queuing for service by the core, arriving at rate `numCores*bckgrndRate' requests per second (where numCores is the number of cores at the endpoint), each request requiring 'bckgrndSrv' units of uninterrupted service, in units of seconds.  These parameters give the modeler the ability to construct experiment scenerios that capture how the application of interest performs when competing for resources against less specified background activity. 'trace' for an endpoint enables tracing of network traffic that originates and terminates at the endpoint.
 
-For Switch and Router the 'model' identifies the model type of the device, used to look up device operation times, and buffer' parameter places an upper bound on the total number of bytes of traffic that one of these devices can buffer in the presence of congestion. 'trace' enables recording of all network events that occur at the device.
+For Switch and Router the 'model' identifies the model type of the device, used to look up device operation times, and buffer' parameter places an upper bound on the total number of bytes of traffic that one of these devices can buffer in the presence of congestion. 'drop' enables the dropping of a packet at the device due to congestion (a future feature not yet implemented), and trace' enables recording of all network events that occur at the device.
 
 ##### Device Attributes
 
