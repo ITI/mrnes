@@ -752,6 +752,7 @@ func createIntrfcState() *intrfcState {
 	iss.IngressLambda = 0.0
 	iss.RsrvdFrac = 0.0
 	iss.priQueue = createClassQueue()
+	iss.end2endBW = iss.Bndwdth-iss.BckgrndBW 
 	return iss
 }
 
