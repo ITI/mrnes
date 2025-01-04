@@ -11,10 +11,11 @@ package mrnes
 // residual task is scheduled.    Allocation of core resources is first-come first-serve
 
 import (
-	"container/heap"
+	_ "container/heap"
 	"github.com/iti/evt/evtm"
 	"github.com/iti/evt/vrtime"
 	"math"
+	"sort"
 )
 
 // Task describes the service requirements of an operation on a msg
@@ -22,9 +23,10 @@ type Task struct {
 	OpType       string  // what operation is being performed
 	arrive       float64 // time of task arrival
 	req          float64 // required service
-	key          float64 // key used for heap ordering
-	pri          float64 // priority, the larger the number the greater the priority
+	key          float64 // key used for ordering
+	pri          int	 // priority, the larger the number the greater the priority
 	timeslice    float64 // timeslice
+	finish	     bool    // flag that when the execution is complete the task has finished
 	execID       int
 	devID        int
 	completeFunc evtm.EventHandlerFunction // call when finished
@@ -36,14 +38,14 @@ type Task struct {
 var nxtTaskIdx int = 0
 
 // createTask is a constructor
-func createTask(op string, arrive, req, pri, timeslice float64, msg any, context any,
+func createTask(op string, arrive, req float64, pri int, timeslice float64, msg any, context any,
 	execID, devID int, complete evtm.EventHandlerFunction) *Task {
 
 	nxtTaskIdx += 1
 
-	// if priority is zero, add 1.0
-	if !(pri > 0.0) {
-		return &Task{OpType: op, arrive: arrive, req: req, pri: 1.0,
+	// if priority is zero, add 1
+	if !(pri > 0) {
+		return &Task{OpType: op, arrive: arrive, req: req, pri: 1,
 			timeslice: timeslice, Msg: msg, context: context, execID: execID,
 			devID: devID, completeFunc: complete}
 	}
@@ -86,19 +88,20 @@ type TaskScheduler struct {
 	inBckgrnd  int        // number of cores being used for background traffic
 	bckgrndOn  bool       // set to true when background processing is in use
 	ts         float64    // default timeslice for cores
-	waiting    []*Task    // work to do, not in service
-	priWaiting reqSrvHeap // manage work being served concurrently
-	inservice  reqSrvHeap // manage work being served concurrently
+	waiting    map[int][]*Task
+	numWaiting int		  // total waiting, at all priority levels
+	priorities []int	  // list of existing priorities, sorted in decreasing priority
+	inservice  int		  // manage work being served concurrently
 }
 
 // CreateTaskScheduler is a constructor
 func CreateTaskScheduler(cores int) *TaskScheduler {
 	ts := new(TaskScheduler)
 	ts.cores = cores
-	ts.waiting = []*Task{}
-	ts.inservice = []*Task{}
-	heap.Init(&ts.inservice)
-	heap.Init(&ts.priWaiting)
+	ts.waiting = make(map[int][]*Task)
+	ts.priorities = make([]int,0)
+	ts.inservice = 0
+	ts.numWaiting = 0
 	return ts
 }
 
@@ -109,7 +112,7 @@ func CreateTaskScheduler(cores int) *TaskScheduler {
 // - msg : the message being processed
 // - complete : an event handler to be called when the task has completed
 // The return is true if the 'task is finished' event was scheduled.
-func (ts *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, pri, timeslice float64,
+func (ts *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req float64, pri int, timeslice float64,
 	context any, msg any, execID, objID int, complete evtm.EventHandlerFunction) bool {
 
 	AddSchedulerTrace(devTraceMgr, evtMgr.CurrentTime(), ts, execID, objID, "schedule["+op+"]")
@@ -119,10 +122,10 @@ func (ts *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, pri
 	task := createTask(op, now, req, pri, timeslice, msg, context, execID, objID, complete)
 
 	// either put into service or put in the waiting queue
-	inservice := ts.joinQueue(evtMgr, task)
+	executing := ts.joinQueue(evtMgr, task)
 
 	// return flag indicating whether task was placed immediately into service
-	return inservice
+	return executing
 }
 
 // joinQueue is called to put a Task into the data structure that governs
@@ -130,58 +133,79 @@ func (ts *TaskScheduler) Schedule(evtMgr *evtm.EventManager, op string, req, pri
 func (ts *TaskScheduler) joinQueue(evtMgr *evtm.EventManager, task *Task) bool {
 	// if all the cores are busy, put in the waiting queue and return
 
-	if ts.cores <= ts.inservice.Len()+ts.inBckgrnd {
-		now := evtMgr.CurrentSeconds()
-		task.key = 1.0 / (math.Pow(now-task.arrive, 0.5) * task.pri)
-		heap.Push(&ts.priWaiting, task)
+	if ts.cores <= ts.inservice + ts.inBckgrnd {
+		pri := task.pri
+		_, present := ts.waiting[pri]
+
+		if !present {
+			ts.waiting[pri] = make([]*Task,0)
+			ts.priorities = append(ts.priorities, pri)
+			if len(ts.priorities) > 1 {
+				sort.Slice(ts.priorities, func (i,j int) bool { return ts.priorities[i] > ts.priorities[j] })
+			}
+		}
+		ts.waiting[pri] = append(ts.waiting[pri], task)
+		ts.numWaiting += 1
+
+		// task.key = 1.0 / (math.Pow(now-task.arrive, 0.5) * task.pri)
+		// heap.Push(&ts.priWaiting, task)
 		return false
 	}
 
-	execute := task.timeslice
-	finished := false
+	// execute the remaining required service time, or the timeslice, whichever is smaller
+	var execute float64
+	var finish bool
 	if task.req <= task.timeslice {
 		execute = task.req
-		finished = true
-	}
-	// schedule event handler for when this timeslice completes
-	evtMgr.Schedule(ts, finished, timeSliceComplete, vrtime.SecondsToTime(execute))
+		finish = true
+	} else {
+		execute = task.timeslice
+		finish = false
+	}	
+	task.finish = finish
+	ts.inservice += 1
 
-	// if the non-background task is going to complete we can schedule the event handler for the end of task
-	if finished {
-		evtMgr.Schedule(task.context, task, task.completeFunc, vrtime.SecondsToTime(task.req))
-	}
+	// its main job is to pull the next job into service
+	evtMgr.Schedule(ts, task, timeSliceComplete, vrtime.SecondsToTime(execute))
 
-	task.req = math.Max(task.req-task.timeslice, 0.0)
-	task.key = task.req // least time first
-	heap.Push(&ts.inservice, task)
-	return finished
+	// if it will have completed when finished, schedule the completion
+	if finish {
+		evtMgr.Schedule(task.context, task, task.completeFunc, vrtime.SecondsToTime(execute))
+	}
+	return finish
 }
 
 // timesliceComplete is called when the timeslice allocated to a task has completed
 func timeSliceComplete(evtMgr *evtm.EventManager, context any, data any) any {
 	ts := context.(*TaskScheduler)
+	task := data.(*Task)
+	ts.inservice -= 1
 
-	finished := data.(bool)
+	ts.scheduleNxtTask(evtMgr)
 
-	// get first completing task of tasks in service
-	taskAny := heap.Pop(&ts.inservice)
-	task := taskAny.(*Task)
-
-	AddSchedulerTrace(devTraceMgr, evtMgr.CurrentTime(), ts, task.execID, task.devID, "complete")
-
-	if ts.priWaiting.Len() > 0 {
-		newtask := heap.Pop(&ts.priWaiting)
-		ts.joinQueue(evtMgr, newtask.(*Task))
-	}
-
-	if finished {
-		return nil
-	}
-
-	// task.req > 0.0 so schedule up another round of service
-	ts.joinQueue(evtMgr, task)
+	// if the task has not finished subtract off the timeslice and resubmit.
+	if !task.finish {
+		task.req -= task.timeslice
+		ts.joinQueue(evtMgr, task)
+	} 
 	return nil
 }
+
+func (ts *TaskScheduler) scheduleNxtTask(evtMgr *evtm.EventManager) bool {
+	scheduled := false
+	for _, pri := range ts.priorities {
+		if len(ts.waiting[pri]) > 0 {
+			task := ts.waiting[pri][0]
+			ts.waiting[pri] = ts.waiting[pri][1:]
+			ts.numWaiting -= 1
+			ts.joinQueue(evtMgr, task)
+			scheduled = true
+			break
+		}
+	}
+	return scheduled
+}
+
 
 // add a background task to a scheduler, give length of burst
 func addBckgrnd(evtMgr *evtm.EventManager, context any, data any) any {
@@ -193,7 +217,7 @@ func addBckgrnd(evtMgr *evtm.EventManager, context any, data any) any {
 	}
 
 	// don't do anything if all the cores are busy
-	if ts.inBckgrnd+ts.inservice.Len() < ts.cores {
+	if ts.inBckgrnd+ts.inservice < ts.cores {
 		ts.inBckgrnd += 1
 
 		u01 := u01List[endpt.EndptState.BckgrndIdx]
@@ -226,9 +250,6 @@ func rmBckgrnd(evtMgr *evtm.EventManager, context any, data any) any {
 	}
 
 	// if there are ordinary tasks in queue and enough cores now, free one up
-	if ts.priWaiting.Len() > 0 && ts.inservice.Len()+ts.inBckgrnd < ts.cores {
-		newtask := ts.priWaiting.Pop()
-		ts.joinQueue(evtMgr, newtask.(*Task))
-	}
+	ts.scheduleNxtTask(evtMgr)
 	return nil
 }

@@ -2213,7 +2213,7 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any 
 	// if there is another message awaiting at the entrance pull it in
 	nxtMsg := intrfc.State.priQueue.nxtNetworkMsg(intrfc, false)
 	if nxtMsg != nil {
-		schedTransmissionComplete(evtMgr, intrfc, nm, msgLen)
+		schedTransmissionComplete(evtMgr, intrfc, *nxtMsg, msgLen)
 	}
 
 	// event-handlers are required to return _something_

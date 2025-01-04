@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"sort"
 )
 
 type TraceRecordType int
@@ -91,9 +92,10 @@ func (tm *TraceManager) AddName(id int, name string, objDesc string) {
 	}
 }
 
+
 // WriteToFile stores the Traces struct to the file whose name is given.
 // Serialization to json or to yaml is selected based on the extension of this name.
-func (tm *TraceManager) WriteToFile(filename string) bool {
+func (tm *TraceManager) WriteToFile(filename string, globalOrder bool) bool {
 	if !tm.InUse {
 		return false
 	}
@@ -101,14 +103,41 @@ func (tm *TraceManager) WriteToFile(filename string) bool {
 	var bytes []byte
 	var merr error = nil
 
-	if pathExt == ".yaml" || pathExt == ".YAML" || pathExt == ".yml" {
-		bytes, merr = yaml.Marshal(*tm)
-	} else if pathExt == ".json" || pathExt == ".JSON" {
-		bytes, merr = json.MarshalIndent(*tm, "", "\t")
-	}
+	if !globalOrder {
+		if pathExt == ".yaml" || pathExt == ".YAML" || pathExt == ".yml" {
+			bytes, merr = yaml.Marshal(*tm)
+		} else if pathExt == ".json" || pathExt == ".JSON" {
+			bytes, merr = json.MarshalIndent(*tm, "", "\t")
+		}
 
-	if merr != nil {
-		panic(merr)
+		if merr != nil {
+			panic(merr)
+		}
+	} else {
+		ntm := new(TraceManager)
+		ntm.InUse = tm.InUse
+		ntm.ExpName = tm.ExpName
+		ntm.NameByID = make(map[int]NameType)
+		for key, value := range tm.NameByID {
+			ntm.NameByID[key] = value
+		}
+		ntm.Traces = make(map[int][]TraceInst)
+		ntm.Traces[0] = make([]TraceInst,0)
+		for _, valueList := range tm.Traces {
+			ntm.Traces[0] = append(ntm.Traces[0], valueList...)
+		}
+
+		sort.Slice(ntm.Traces[0], func(i,j int) bool {
+			v1, _ := strconv.ParseFloat(ntm.Traces[0][i].TraceTime, 64); v2, _ := strconv.ParseFloat(ntm.Traces[0][j].TraceTime, 64); return v1 < v2})
+		if pathExt == ".yaml" || pathExt == ".YAML" || pathExt == ".yml" {
+			bytes, merr = yaml.Marshal(*ntm)
+		} else if pathExt == ".json" || pathExt == ".JSON" {
+			bytes, merr = json.MarshalIndent(*ntm, "", "\t")
+		}
+
+		if merr != nil {
+			panic(merr)
+		}
 	}
 
 	f, cerr := os.Create(filename)
@@ -224,8 +253,8 @@ func AddSchedulerTrace(tm *TraceManager, vrt vrtime.Time, ts *TaskScheduler, exe
 	st.ObjID = objID
 	st.Op = op
 	st.Cores = ts.cores
-	st.Inservice = len(ts.inservice)
-	st.Waiting = ts.priWaiting.Len()
+	st.Inservice = ts.inservice
+	st.Waiting = ts.numWaiting
 	st.Inbckgrnd = ts.inBckgrnd
 	stStr := st.Serialize()
 
@@ -254,3 +283,5 @@ func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, o
 	trcInst := TraceInst{TraceTime: traceTime, TraceType: "network", TraceStr: ntrStr}
 	tm.AddTrace(vrt, ntr.ExecID, trcInst)
 }
+
+
