@@ -949,6 +949,8 @@ func (intrfc *intrfcStruct) matchParam(attrbName, attrbValue string) bool {
 		return DevCodeToStr(intrfc.Device.DevType()) == attrbValue
 	case "devname":
 		return intrfc.Device.DevName() == attrbValue
+	case "faces":
+		return intrfc.Faces.Name == attrbValue
 	}
 
 	// an error really, as we should match only the names given in the switch statement above
