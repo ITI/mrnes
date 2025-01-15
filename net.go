@@ -441,8 +441,12 @@ func (np *NetworkPortal) Depart(evtMgr *evtm.EventManager, nm NetworkMsg) {
 	} else {
 		rtnMsg.Rate = np.AcceptedRate[nm.FlowID]
 	}
-
 	rtnMsg.Msg = nm.Msg
+
+	rtnMsg.DevIDs = make([]int, len(*(nm.Route)))
+	for idx, rtStep := range *(nm.Route) {
+		rtnMsg.DevIDs[idx] = rtStep.devID
+	}
 
 	rtnCxt := rtnRec.rtnCxt
 	rtnFunc := rtnRec.rtnFunc
@@ -483,6 +487,7 @@ type RtnMsgStruct struct {
 	Rate    float64 // for a flow, its accept rate.  For a packet, the minimum non-flow bandwidth at a
 	// network or interface it encountered
 	PrLoss float64 // estimated probability of having been dropped somewhere in transit
+	DevIDs []int   // list of ids of devices visited on transition of network
 	Msg    any     // msg introduced at EnterNetwork
 }
 
