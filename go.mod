@@ -1,6 +1,6 @@
 module github.com/iti/mrnes
 
-go 1.23.2
+go 1.23.4
 
 require (
 	github.com/iti/evt/evtm v0.1.4
