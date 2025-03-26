@@ -75,6 +75,23 @@ var cachedSP map[int]path.Shortest
 // a MrNesbits representation of a node id and a list of node ids of
 // network devices it connects to.
 func buildconnGraph(edges map[int][]int) graph.Graph {
+
+	/*
+		keys := []int{}
+		for key, _ := range edges {
+			keys = append(keys, key)
+		}
+		sort.Ints(keys)
+		for _, src := range keys {
+			peers := []string{}
+			for _, peerID := range edges[src] {
+				peers = append(peers, TopoDevByID[peerID].DevName())
+			}
+			peerList := strings.Join(peers, ",")
+			fmt.Printf("src	%s dests [%s]\n", TopoDevByID[src].DevName(), peerList)
+		}
+	*/
+
 	gNodes = make(map[int]simple.Node)
 	cachedSP = make(map[int]path.Shortest)
 	connGraphBuilt = false
@@ -255,15 +272,14 @@ func findRoute(srcID, dstID int) *[]intrfcsToDev {
 		// from the previous device and the interface into which the route passes to reach devID
 		srcIntrfcID, dstIntrfcID := intrfcsBetween(route[idx-1], devID)
 
-		// if there is a network between the previous route device and devID, identify it
-		networkID := -1
 		dstIntrfc := IntrfcByID[dstIntrfcID]
 
 		// if 'cable' is nil we're pointing through a network and
 		// use its id
-		if dstIntrfc.Cable == nil {
-			networkID = dstIntrfc.Faces.Number
-		}
+		// if dstIntrfc.Cable == nil {
+		//		networkID = dstIntrfc.Faces.Number
+		// }
+		networkID := dstIntrfc.Faces.Number
 
 		istp := intrfcsToDev{srcIntrfcID: srcIntrfcID, dstIntrfcID: dstIntrfcID, netID: networkID, devID: devID}
 		routePlan = append(routePlan, istp)

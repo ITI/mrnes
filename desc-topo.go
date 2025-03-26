@@ -22,8 +22,9 @@ import (
 type DevExecDesc struct {
 	DevOp    string  `json:"devop" yaml:"devop"`
 	Model    string  `json:"model" yaml:"model"`
+	PcktLen  int     `json:"pcktlen" yaml:"pcktlen"`
 	ExecTime float64 `json:"exectime" yaml:"exectime"`
-	PerByte  float64 `json:"perbyte" yaml:"perbyte"`
+	Bndwdth  float64 `json:"bndwdth" yaml:"bndwdth"`
 }
 
 // A DevExecList holds a map (Times) whose key is the operation
@@ -73,7 +74,10 @@ func (del *DevExecList) WriteToFile(filename string) error {
 	if werr != nil {
 		panic(werr)
 	}
-	f.Close()
+	err := f.Close()
+	if err != nil {
+		panic(err)
+	}
 
 	return werr
 }
@@ -109,12 +113,13 @@ func ReadDevExecList(filename string, useYAML bool, dict []byte) (*DevExecList, 
 }
 
 // AddTiming takes the parameters of a DevExecDesc, creates one, and adds it to the FuncExecList
-func (del *DevExecList) AddTiming(devOp, model string, execTime, perbyte float64) {
+func (del *DevExecList) AddTiming(devOp, model string, execTime float64, pcktlen int, bndwdth float64) {
 	_, present := del.Times[devOp]
 	if !present {
 		del.Times[devOp] = make([]DevExecDesc, 0)
 	}
-	del.Times[devOp] = append(del.Times[devOp], DevExecDesc{Model: model, DevOp: devOp, ExecTime: execTime, PerByte: perbyte})
+	del.Times[devOp] = append(del.Times[devOp],
+		DevExecDesc{Model: model, DevOp: devOp, ExecTime: execTime, PcktLen: pcktlen, Bndwdth: bndwdth})
 }
 
 // numberOfIntrfcs (and more generally, numberOf{Objects}
@@ -127,12 +132,14 @@ var numberOfIntrfcs int
 var numberOfRouters int
 var numberOfSwitches int
 var numberOfEndpts int
+var numberOfFlows int
 
 // maps that let you use a name to look up an object
 var objTypeByName map[string]string
 var devByName map[string]NetDevice
 var netByName map[string]*NetworkFrame
 var rtrByName map[string]*RouterFrame
+var flowByName map[string]*FlowFrame
 
 // devConnected gives for each NetDev device a list of the other NetDev devices
 // it connects to through wired interfaces
@@ -143,12 +150,14 @@ func InitTopoDesc() {
 	numberOfRouters = 0
 	numberOfSwitches = 0
 	numberOfEndpts = 0
+	numberOfFlows = 0
 
 	// maps that let you use a name to look up an object
 	objTypeByName = make(map[string]string)
 	devByName = make(map[string]NetDevice)
 	netByName = make(map[string]*NetworkFrame)
 	rtrByName = make(map[string]*RouterFrame)
+	flowByName = make(map[string]*FlowFrame)
 
 	// devConnected gives for each NetDev device a list of the other NetDev devices
 	// it connects to through wired interfaces
@@ -166,7 +175,7 @@ func InitTopoDesc() {
 // Frames we transform each into a Desc version for serialization.
 
 // The NetDevice interface lets us use common code when network objects
-// (endpt, switch, router, network) are involved in model construction.
+// (endpt, switch, router, network, flow) are involved in model construction.
 type NetDevice interface {
 	DevName() string                 // returns the .Name field of the struct
 	DevID() string                   // returns a unique (string) identifier for the struct
@@ -408,16 +417,6 @@ func markConnected(id1, id2 string) {
 	devConnected[id2] = append(devConnected[id2], id1)
 }
 
-// determine whether intrfc1 is in intrfc2's Carry slice and
-// vice versa
-func carryConnected(intrfc1, intrfc2 *IntrfcFrame) bool {
-
-	if !carryContained(intrfc1, intrfc2) {
-		return false
-	}
-	return carryContained(intrfc2, intrfc1)
-}
-
 // determine whether intrfc1 is in the Carry slice of intrfc2
 func carryContained(intrfc1, intrfc2 *IntrfcFrame) bool {
 	for _, intrfc := range intrfc2.Carry {
@@ -441,8 +440,14 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 
 	// ensure that both devices are known to the network
 	net := netByName[faces]
-	net.IncludeDev(dev1, "wired", true)
-	net.IncludeDev(dev2, "wired", true)
+	err := net.IncludeDev(dev1, "wired", true)
+	if err != nil {
+		panic(err)
+	}
+	err = net.IncludeDev(dev2, "wired", true)
+	if err != nil {
+		panic(err)
+	}
 
 	// for each device collect all the interfaces that face the named network and are not wireless
 	intrfcs1 := []*IntrfcFrame{}
@@ -519,7 +524,10 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 	if free1 == nil {
 		intrfcName := DefaultIntrfcName(dev1.DevName())
 		free1 = CreateIntrfc(dev1.DevName(), intrfcName, dev1.DevType(), "wired", faces)
-		dev1.DevAddIntrfc(free1)
+		err := dev1.DevAddIntrfc(free1)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// check dev2's interfaces
@@ -534,7 +542,10 @@ func ConnectDevs(dev1, dev2 NetDevice, cable bool, faces string) {
 	if free2 == nil {
 		intrfcName := DefaultIntrfcName(dev2.DevName())
 		free2 = CreateIntrfc(dev2.DevName(), intrfcName, dev2.DevType(), "wired", faces)
-		dev2.DevAddIntrfc(free2)
+		err := dev2.DevAddIntrfc(free2)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// found the interfaces, make the connection, using cable or carry as directed by the input argument
@@ -575,7 +586,10 @@ func (rf *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) error {
 	if hubIntrfc == nil {
 		intrfcName := DefaultIntrfcName(rf.DevName())
 		hubIntrfc = CreateIntrfc(rf.DevName(), intrfcName, rf.DevType(), "wireless", faces)
-		rf.DevAddIntrfc(hubIntrfc)
+		err := rf.DevAddIntrfc(hubIntrfc)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// ensure that device has wireless interface facing the named network
@@ -591,7 +605,10 @@ func (rf *RouterFrame) WirelessConnectTo(dev NetDevice, faces string) error {
 	if devIntrfc == nil {
 		intrfcName := DefaultIntrfcName(dev.DevName())
 		devIntrfc = CreateIntrfc(dev.DevName(), intrfcName, dev.DevType(), "wireless", faces)
-		dev.DevAddIntrfc(devIntrfc)
+		err := dev.DevAddIntrfc(devIntrfc)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	hubIntrfcName := hubIntrfc.Name
@@ -841,9 +858,6 @@ type RouterDesc struct {
 	// Model is an attribute like "Cisco 6400". Used primarily in run-time configuration
 	Model string `json:"model" yaml:"model"`
 
-	// use simple timing
-	Simple int `json:"simple" yaml:"simple"`
-
 	// list of names interfaces that describe the ports of the router
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
@@ -961,13 +975,116 @@ func (rf *RouterFrame) Transform() RouterDesc {
 
 	return *rd
 }
+// FlowFrame describes parameters of a Router in the topology in pre-serialized form
+type FlowFrame struct {
+	Name      string   `json:"name" yaml:"name"`
+	SrcDev    string   `json:"srcdev"  yaml:"srcdev"`
+	DstDev    string   `json:"dstdev"  yaml:"dstdev"`
+	Mode      string   `json:"mode"    yaml:"mode"`
+	FlowModel string   `json:"flowmodel"  yaml:"flowmodel"`
+	ReqRate   float64  `json:"reqrate" yaml:"reqrate"`
+	FrameSize int      `json:"framesize" yaml:"framesize"`
+	Groups  []string   `json:"groups" yaml:"groups"`
+}
+
+// DefaultFlowName returns a unique name for a flow
+func DefaultFlowName() string {
+	return fmt.Sprintf("flow.[%d]", numberOfFlows)
+}
+
+// CreateFlowFrame is a constructor, stores (possibly creates default) name
+func CreateFlowFrame(name, srcDev, dstDev, mode, flowmodel string, reqRate float64, frameSize int) *FlowFrame {
+	ff := new(FlowFrame)
+	numberOfFlows += 1
+
+	if len(name) == 0 {
+		name = DefaultFlowName()
+	}
+
+	ff.Name = name
+	ff.SrcDev = srcDev
+	ff.DstDev = dstDev
+	ff.Mode   = mode
+	ff.FlowModel = flowmodel
+	ff.ReqRate = reqRate
+	ff.FrameSize = frameSize
+
+	objTypeByName[name] = "Flow"
+	devByName[name] = ff
+	flowByName[name] = ff
+	ff.Groups = []string{}
+	return ff
+}
+
+// DevName returns the name of the NetDevice
+func (ff *FlowFrame) DevName() string {
+	return ff.Name
+}
+
+// DevType returns network objec type (e.g., "Switch", "Router", "Endpt", "Network") for the NetDevice
+func (ff *FlowFrame) DevType() string {
+	return "Flow"
+}
+
+// DevID returns a unique identifier for the NetDevice
+func (ff *FlowFrame) DevID() string {
+	return ff.Name
+}
+
+// DevModel returns the NetDevice model code, if any
+func (ff *FlowFrame) DevModel() string {
+	return "" 
+}
+
+// DevInterfaces returns the slice of IntrfcFrame held by the NetDevice, if any
+func (ff *FlowFrame) DevInterfaces() []*IntrfcFrame {
+	return []*IntrfcFrame{}
+}
+
+// DevAddIntrfc includes an IntrfcFrame to the NetDevice
+func (ff *FlowFrame) DevAddIntrfc(iff *IntrfcFrame) error {
+	return nil
+}
+
+// AddGroup includes a group name to the router
+func (ff *FlowFrame) AddGroup(groupName string) {
+	if !slices.Contains(ff.Groups, groupName) {
+		ff.Groups = append(ff.Groups, groupName)
+	}
+}
+
+// Transform returns a serializable RouterDesc, transformed from a FlowFrame.
+func (ff *FlowFrame) Transform() FlowDesc {
+	fd := new(FlowDesc)
+	fd.Name   = ff.Name
+	fd.SrcDev = ff.SrcDev
+	fd.DstDev = ff.DstDev
+	fd.Mode   = ff.Mode 
+	fd.FlowModel = ff.FlowModel
+	fd.ReqRate   = ff.ReqRate
+	fd.FrameSize = ff.FrameSize
+	fd.Groups    = ff.Groups
+	return *fd
+}
+
+// FlowDesc describes parameters of a Router in the topology.
+type FlowDesc struct {
+	// Name is unique string identifier used to reference the flow
+	Name      string   `json:"name" yaml:"name"`
+	SrcDev    string   `json:"srcdev"  yaml:"srcdev"`
+	DstDev    string   `json:"dstdev"  yaml:"dstdev"`
+	Mode      string   `json:"mode"    yaml:"mode"`
+	FlowModel string   `json:"flowmodel"  yaml:"flowmodel"`
+	ReqRate   float64  `json:"reqrate" yaml:"reqrate"`
+	FrameSize int      `json:"framesize" yaml:"framesize"`
+	Groups  []string   `json:"groups" yaml:"groups"`
+}
 
 // SwitchDesc holds a serializable representation of a switch.
 type SwitchDesc struct {
 	Name       string       `json:"name" yaml:"name"`
 	Groups     []string     `json:"groups" yaml:"groups"`
 	Model      string       `json:"model" yaml:"model"`
-	Simple     int          `json:"simple" yaml:"simple"`
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
 
@@ -1508,6 +1625,7 @@ type RtrDescSlice []RouterDesc
 type EndptDescSlice []EndptDesc
 type NetworkDescSlice []NetworkDesc
 type SwitchDescSlice []SwitchDesc
+type FlowDescSlice []FlowDesc
 
 // TopoCfg contains all of the networks, routers, and
 // endpts, as they are listed in the json file.
@@ -1517,6 +1635,7 @@ type TopoCfg struct {
 	Routers  RtrDescSlice     `json:"routers" yaml:"routers"`
 	Endpts   EndptDescSlice   `json:"endpts" yaml:"endpts"`
 	Switches SwitchDescSlice  `json:"switches" yaml:"switches"`
+	Flows    FlowDescSlice    `json:"flows" yaml:"flows"`
 }
 
 // A TopoCfgDict holds instances of TopoCfg structures, in a map whose key is
@@ -1586,7 +1705,10 @@ func (tcd *TopoCfgDict) WriteToFile(filename string) error {
 	if werr != nil {
 		panic(werr)
 	}
-	f.Close()
+	err := f.Close()
+	if err != nil {
+		panic(err)
+	}
 
 	return werr
 }
@@ -1659,7 +1781,10 @@ func (dict *TopoCfg) WriteToFile(filename string) error {
 	if werr != nil {
 		panic(werr)
 	}
-	f.Close()
+	err := f.Close()
+	if err != nil {
+		panic(err)
+	}
 
 	return werr
 }
@@ -1768,7 +1893,10 @@ func (ddd *DevDescDict) WriteToFile(filename string) error {
 	if werr != nil {
 		panic(werr)
 	}
-	f.Close()
+	err := f.Close()
+	if err != nil {
+		panic(err)
+	}
 
 	return werr
 }

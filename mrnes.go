@@ -12,19 +12,24 @@ import (
 	"path"
 	"sort"
 	"strconv"
-	"strings"
 )
 
 // declare global variables that are loaded from
 // analysis of input files
-type regression struct {
-	b, m float64
+type opTimeDesc struct {
+	execTime, bndwdth float64
+	pcktLen           int
 }
 
-var devExecTimeTbl map[string]map[string]regression
+var devExecTimeTbl map[string]map[string][]opTimeDesc
 
 // QkNetSim is set from the command line, when selected uses 'quick' form of network simulation
 var QkNetSim bool = false
+
+var DefaultInt = make(map[string]int)
+var DefaultFloat = make(map[string]float64)
+var DefaultBool = make(map[string]bool)
+var DefaultStr = make(map[string]string)
 
 // TaskSchedulerByHostName maps an identifier for the scheduler to the scheduler itself
 var TaskSchedulerByHostName map[string]*TaskScheduler = make(map[string]*TaskScheduler)
@@ -35,51 +40,86 @@ var AccelSchedulersByHostName map[string]map[string]*TaskScheduler = make(map[st
 var u01List []float64
 var numU01 int = 10000
 
+var defaultIntrfcBndwdth float64 = 100.0
+
 // buildDevExecTimeTbl creates a map structure that stores information about
 // operations on switches and routers.
 //
 //	The organization is
-//	 map[operation type] -> map[device model] -> execution time
-func buildDevExecTimeTbl(detl *DevExecList) map[string]map[string]regression {
-	det := make(map[string]map[string]regression)
+//	 map[operation type] -> map[device model] -> list of execution times (including pcktlen and bndwdth)
+func buildDevExecTimeTbl(detl *DevExecList) map[string]map[string][]opTimeDesc {
+	det := make(map[string]map[string][]opTimeDesc)
 
-	// the device timings are organized in the desc structure as a map indexed by operation type (e.g., "switch", "route")
+	// the device timings are organized in the desc structure as a map indexed by operation type
+	// (e.g., "switch", "route")
 	for opType, mapList := range detl.Times {
 
 		// initialize the value for map[opType] if needed
 		_, present := det[opType]
 		if !present {
-			det[opType] = make(map[string]regression)
+			det[opType] = make(map[string][]opTimeDesc)
 		}
 
 		// loop over all the records in the desc list associated with the dev op, getting and including the
 		// device 'model' identifier and the execution time
+		bndwdthByModel := make(map[string]float64)
+
 		for _, devExecDesc := range mapList {
 			model := devExecDesc.Model
-			execTime := devExecDesc.ExecTime
-			perbyte := devExecDesc.PerByte
-			det[opType][model] = regression{b: execTime, m: perbyte}
+			bndwdth := devExecDesc.Bndwdth
+			_, present := bndwdthByModel[model]
+
+			if !present {
+				bndwdthByModel[model] = bndwdth
+			}
+
+			if math.Abs(bndwdth-bndwdthByModel[model]) > 1e-3 {
+				panic(fmt.Errorf("conflicting bndwdths in devOp %s for model %s", opType, model))
+			}
+
+			if !(bndwdth > 0.0) {
+				bndwdth = 1000.0
+			}
+			_, present = det[opType][model]
+			if !present {
+				det[opType][model] = []opTimeDesc{}
+			}
+
+			det[opType][model] = append(det[opType][model],
+				opTimeDesc{execTime: devExecDesc.ExecTime, pcktLen: devExecDesc.PcktLen, bndwdth: bndwdth})
+		}
+
+		// make sure that list is sorted by packet length
+		for model := range det[opType] {
+			sort.Slice(det[opType][model], func(i, j int) bool { return det[opType][model][i].pcktLen < det[opType][model][j].pcktLen })
 		}
 	}
 
 	// add default's for "switch" and "route"
 	_, present := det["switch"]
 	if !present {
-		det["switch"] = make(map[string]regression)
+		det["switch"] = make(map[string][]opTimeDesc)
 	}
-	_, present = det["switch"]["Default"]
+	_, present = det["switch"]["default"]
 	if !present {
-		det["switch"]["Default"] = regression{b: 20e-6, m: 5e-8}
+		det["switch"]["default"] = []opTimeDesc{}
+	}
+	if len(det["switch"]["default"]) == 0 {
+		det["switch"]["default"] = append(det["switch"]["default"], opTimeDesc{execTime: 20e-6, pcktLen: 0, bndwdth: defaultIntrfcBndwdth})
 	}
 
 	_, present = det["route"]
 	if !present {
-		det["route"] = make(map[string]regression)
+		det["route"] = make(map[string][]opTimeDesc)
 	}
-	_, present = det["route"]["Default"]
+	_, present = det["route"]["default"]
 	if !present {
-		det["route"]["Default"] = regression{b: 20e-5, m: 5e-8}
+		det["route"]["default"] = []opTimeDesc{}
 	}
+	if len(det["route"]["default"]) == 0 {
+		det["route"]["default"] = append(det["route"]["default"], opTimeDesc{execTime: 100e-6, pcktLen: 0, bndwdth: defaultIntrfcBndwdth})
+	}
+
 	return det
 }
 
@@ -144,7 +184,7 @@ func LoadDevExec(devExecFile string) error {
 // parameters (e.g., defaults) and a 'modify' file of performance parameters
 // to merge in (e.g. with higher specificity) and initializes the topology
 // elements state structures with these.
-func LoadStateParams(base, mdfy string) error {
+func LoadStateParams(base string) error {
 	empty := make([]byte, 0)
 	ext := path.Ext(base)
 	useYAML := (ext == ".yaml") || (ext == ".yml")
@@ -154,31 +194,26 @@ func LoadStateParams(base, mdfy string) error {
 		return err
 	}
 
-	var xdx *ExpCfg
-	if len(mdfy) > 0 {
-		ext := path.Ext(mdfy)
-		useYAML := (ext == ".yaml") || (ext == ".yml")
-		xdx, err = ReadExpCfg(mdfy, useYAML, empty)
-		if err != nil {
-			return err
-		}
-	}
-
 	// use configuration parameters to initialize topology state
-	SetTopoState(xd, xdx)
+	SetTopoState(xd)
 	return nil
 }
 
 // BuildExperimentNet bundles the functions of LoadTopo, LoadDevExec, and LoadStateParams
-func BuildExperimentNet(dictFiles map[string]string, useYAML bool, idCounter int, traceMgr *TraceManager) error {
+func BuildExperimentNet(evtMgr *evtm.EventManager, dictFiles map[string]string,
+	useYAML bool, idCounter int, traceMgr *TraceManager) error {
+
 	topoFile := dictFiles["topo"]
 	devExecFile := dictFiles["devExec"]
 	baseFile := dictFiles["exp"]
-	mdfyFile := dictFiles["mdfy"]
 
-	err1 := LoadTopo(topoFile, idCounter, traceMgr)
-	err2 := LoadDevExec(devExecFile)
-	err3 := LoadStateParams(baseFile, mdfyFile)
+	InitFlowList()
+
+	// load device execution times first so that initialization of
+	// topo interfaces get access to device timings
+	err1 := LoadDevExec(devExecFile)
+	err2 := LoadTopo(topoFile, idCounter, traceMgr)
+	err3 := LoadStateParams(baseFile)
 
 	bckgrndRNG := rngstream.New("bckgrnd")
 	u01List = make([]float64, numU01)
@@ -186,49 +221,13 @@ func BuildExperimentNet(dictFiles map[string]string, useYAML bool, idCounter int
 		u01List[idx] = bckgrndRNG.RandU01()
 	}
 
-	InitBckgrndFlowList()
 	errs := []error{err1, err2, err3}
+
+	StartFlows(evtMgr)
 
 	// note that nil is returned if all errors are nil
 	return ReportErrs(errs)
 }
-
-/*
-// BuildExperimentNet is called from the module that creates and runs
-// a simulation. Its inputs identify the names of input files, which it
-// uses to assemble and initialize the model (and experiment) data structures.
-func BuildExperimentNet(dictFiles map[string]string, useYAML bool, idCounter int, traceMgr *TraceManager, evtMgr *evtm.EventManager) {
-	// dictFiles is a map that binds pre-defined keys referring to input file types with file names
-	// call GetExperimentNetDicts to do the heavy lifting of extracting data structures
-	// (typically maps) designed for serialization/deserialization,  and assign those maps to variables
-	// we'll use to re-represent this information in structures optimized for run-time use
-	tc, del, xd, xdx := GetExperimentNetDicts(dictFiles)
-
-	// panic if any one of these dictionaries could not be built
-	if (xd == nil) || (del == nil) || (tc == nil) {
-		panic("empty dictionary")
-	}
-
-	NumIDs = idCounter
-
-	// make sure the first calls to the rng build the u01 table for background traffic
-	bckgrndRNG := rngstream.New("bckgrnd")
-	u01List = make([]float64, numU01)
-	for idx:=0; idx<numU01; idx++ {
-		u01List[idx] = bckgrndRNG.RandU01()
-	}
-
-	// save as global to mrnes for tracing network execution
-	devTraceMgr = traceMgr
-
-	devExecTimeTbl = buildDevExecTimeTbl(del)
-
-	SetTopoState(xd, xdx)
-
-	// see whether connections give fully connected graph or not
-	checkConnections(topoGraph)
-}
-*/
 
 // reorderExpParams is used to put the ExpParameter parameters in
 // an order such that the earlier elements in the order have broader
@@ -274,25 +273,23 @@ func reorderExpParams(pL []ExpParameter) []ExpParameter {
 	// sort the sg elements by (Attribute, Param) key
 	sort.Slice(sg, func(i, j int) bool {
 		compared := CompareAttrbs(sg[i].Attributes, sg[j].Attributes)
-		if compared == -1 {
-			return true
-		} else if compared == 1 {
-			return false
-		}
-		/*
-			if sg[i].Attribute < sg[j].Attribute {
+		switch compared {
+			case -1 :
 				return true
-			}
-			if sg[i].Attribute > sg[j].Attribute {
+			case 1:
 				return false
-			}
-		*/
+			default:
+				return false
+		}
+
 		if sg[i].Param < sg[j].Param {
 			return true
 		}
+
 		if sg[i].Param > sg[j].Param {
 			return false
 		}
+
 		return sg[i].Value < sg[j].Value
 	})
 
@@ -337,37 +334,15 @@ func reorderExpParams(pL []ExpParameter) []ExpParameter {
 }
 
 // SetTopoState creates the state structures for the devices before initializing from configuration files
-func SetTopoState(expCfg, expxCfg *ExpCfg) {
-	/*
-		for _, endpt := range EndptDevByID {
-			endpt.EndptState = createEndptState(endpt.EndptName)
-		}
-		for _, is := range IntrfcByID {
-			is.State = createIntrfcState()
-		}
-
-		for _, swtch := range SwitchDevByID {
-		    swtch.SwitchState = createSwitchState(swtch.SwitchName)
-		}
-
-		for _, router := range RouterDevByID {
-		    router.RouterState = createRouterState(router.RouterName)
-		}
-
-		for _, ns := range NetworkByID {
-			ns.NetState = createNetworkState(ns.Name)
-		}
-	*/
-
-	SetTopoParameters(expCfg, expxCfg)
-	InitBckgrndFlowList()
+func SetTopoState(expCfg *ExpCfg) {
+	SetTopoParameters(expCfg)
 }
 
 // SetTopoParameters takes the list of parameter configurations expressed in
 // ExpCfg form, turns its elements into configuration commands that may
 // initialize multiple objects, includes globally applicable assignments
 // and assign these in greatest-to-least application order
-func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
+func SetTopoParameters(expCfg *ExpCfg) {
 	// this call initializes some maps used below
 	GetExpParamDesc()
 
@@ -376,7 +351,7 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 	// specified assignments
 	defaultParamList := make([]ExpParameter, 0)
 
-	// set defaults to ensure that every parameter that has to have a value does (except 'model', and 'simple')
+	// set defaults to ensure that every parameter that has to have a value does 
 	for _, paramObj := range ExpParamObjs {
 		for _, param := range ExpParams[paramObj] {
 			vs := ""
@@ -394,7 +369,7 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 			case "capacity":
 				vs = "10"
 			case "MTU":
-				vs = "1500"
+				vs = "1560"
 			case "trace":
 				vs = "false"
 			default:
@@ -415,50 +390,7 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 	rtrParams := []ExpParameter{}
 	swtchParams := []ExpParameter{}
 	intrfcParams := []ExpParameter{}
-
-	endptParamsMod := []ExpParameter{}
-	netParamsMod := []ExpParameter{}
-	rtrParamsMod := []ExpParameter{}
-	swtchParamsMod := []ExpParameter{}
-	intrfcParamsMod := []ExpParameter{}
-
-	for _, param := range expCfg.Parameters {
-		switch param.ParamObj {
-		case "Endpt":
-			endptParams = append(endptParams, param)
-		case "Router":
-			rtrParams = append(rtrParams, param)
-		case "Switch":
-			swtchParams = append(swtchParams, param)
-		case "Interface":
-			intrfcParams = append(intrfcParams, param)
-		case "Network":
-			netParams = append(netParams, param)
-		default:
-			panic("surprise ParamObj")
-		}
-	}
-
-	modExpPresent := (expxCfg != nil)
-
-	if modExpPresent {
-		for _, param := range expxCfg.Parameters {
-			switch param.ParamObj {
-			case "Endpt":
-				endptParamsMod = append(endptParamsMod, param)
-			case "Router":
-				rtrParamsMod = append(rtrParamsMod, param)
-			case "Switch":
-				swtchParamsMod = append(swtchParamsMod, param)
-			case "Interface":
-				intrfcParamsMod = append(intrfcParamsMod, param)
-			case "Network":
-				netParamsMod = append(netParamsMod, param)
-			default:
-				panic("surprise ParamObj")
-			}
-		}
-	}
+	flowParams := []ExpParameter{}
 
 	// reorder each list to assure the application order of most-general-first, and remove duplicates
 	endptParams = reorderExpParams(endptParams)
@@ -466,30 +398,18 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 	swtchParams = reorderExpParams(swtchParams)
 	intrfcParams = reorderExpParams(intrfcParams)
 	netParams = reorderExpParams(netParams)
-
-	endptParamsMod = reorderExpParams(endptParamsMod)
-	rtrParamsMod = reorderExpParams(rtrParamsMod)
-	swtchParamsMod = reorderExpParams(swtchParamsMod)
-	intrfcParamsMod = reorderExpParams(intrfcParamsMod)
-	netParamsMod = reorderExpParams(netParamsMod)
+	flowParams = reorderExpParams(flowParams)
 
 	// concatenate defaultParamList and these lists.  Note that this places the defaults
 	// we created above before any defaults read in from file, so that if there are conflicting
 	// default assignments the one the user put in the startup file will be applied after the
 	// default default we create in this program
 	orderedParamList := append(defaultParamList, endptParams...)
-	orderedParamList = append(orderedParamList, endptParamsMod...)
 	orderedParamList = append(orderedParamList, rtrParams...)
-	orderedParamList = append(orderedParamList, rtrParamsMod...)
-
 	orderedParamList = append(orderedParamList, swtchParams...)
-	orderedParamList = append(orderedParamList, swtchParamsMod...)
-
 	orderedParamList = append(orderedParamList, intrfcParams...)
-	orderedParamList = append(orderedParamList, intrfcParamsMod...)
-
 	orderedParamList = append(orderedParamList, netParams...)
-	orderedParamList = append(orderedParamList, netParamsMod...)
+	orderedParamList = append(orderedParamList, flowParams...)
 
 	// get the names of all network objects, separated by their network object type
 	switchList := []paramObj{}
@@ -512,12 +432,18 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 		netList = append(netList, net)
 	}
 
+	flowList := []paramObj{}
+	for _, flow := range FlowByID {
+		flowList = append(flowList, flow)
+	}
+
 	intrfcList := []paramObj{}
 	for _, intrfc := range IntrfcByID {
 		intrfcList = append(intrfcList, intrfc)
 	}
 
 	// go through the sorted list of parameter assignments, more general before more specific
+
 	for _, param := range orderedParamList {
 		// create a list that limits the objects to test to those that have required type
 		var testList []paramObj
@@ -527,13 +453,17 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 			testList = switchList
 		case "Router":
 			testList = routerList
-		case "Endpt":
+		case "Endpoint":
 			testList = endptList
 		case "Interface":
 			testList = intrfcList
 		case "Network":
 			testList = netList
+		case "Flow":
+			testList = flowList
 		}
+
+		testObjType := param.ParamObj
 
 		// for every object in the constrained list test whether the attributes match.
 		// Observe that
@@ -553,7 +483,20 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 				// there is nothing else, but '*' overrides all
 				if attrbName == "*" {
 					matched = true
-
+					defaultName := testObjType + "-" + attrbName
+					defaultValue, defaultTypes := stringToValueStruct(attrbValue)
+					for _, vtype := range defaultTypes {
+						switch vtype {
+						case "int":
+							DefaultInt[defaultName] = defaultValue.intValue
+						case "float":
+							DefaultFloat[defaultName] = defaultValue.floatValue
+						case "bool":
+							DefaultBool[defaultName] = defaultValue.boolValue
+						case "string":
+							DefaultStr[defaultName] = defaultValue.stringValue
+						}
+					}
 					break
 				}
 
@@ -568,7 +511,7 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 			if matched {
 				// the parameter value might be a string, or float, or bool.
 				// stringToValue figures it out and returns value assignment in vs
-				vs := stringToValueStruct(param.Value)
+				vs, _ := stringToValueStruct(param.Value)
 				testObj.setParam(param.Param, vs)
 			}
 		}
@@ -577,32 +520,35 @@ func SetTopoParameters(expCfg, expxCfg *ExpCfg) {
 
 // stringToValueStruct takes a string (used in the run-time configuration phase)
 // and determines whether it is an integer, floating point, or a string
-func stringToValueStruct(v string) valueStruct {
+func stringToValueStruct(v string) (valueStruct, []string) {
 	vs := valueStruct{intValue: 0, floatValue: 0.0, stringValue: "", boolValue: false}
 
 	// try conversion to int
 	ivalue, ierr := strconv.Atoi(v)
 	if ierr == nil {
 		vs.intValue = ivalue
+		if ivalue == 1 {
+			vs.boolValue = true
+		}
 		vs.floatValue = float64(ivalue)
-		return vs
+		return vs, []string{"int", "float"}
 	}
 
 	// failing that, try conversion to float
 	fvalue, ferr := strconv.ParseFloat(v, 64)
 	if ferr == nil {
 		vs.floatValue = fvalue
-		return vs
+		return vs, []string{"float"}
 	}
 
 	// left with it being a string.  See if true, True
 	if v == "true" || v == "True" {
 		vs.boolValue = true
-		return vs
+		return vs, []string{"bool"}
 	}
 
 	vs.stringValue = v
-	return vs
+	return vs, []string{"string"}
 }
 
 // global variables for finding things given an id, or a name
@@ -617,6 +563,9 @@ var EndptDevByName map[string]*endptDev
 
 var SwitchDevByID map[int]*switchDev
 var SwitchDevByName map[string]*switchDev
+
+var FlowByID map[int]*Flow
+var FlowByName map[string]*Flow
 
 var NetworkByID map[int]*networkStruct
 var NetworkByName map[string]*networkStruct
@@ -668,13 +617,6 @@ func GetExperimentNetDicts(dictFiles map[string]string) (*TopoCfg, *DevExecList,
 
 	xd, err = ReadExpCfg(dictFiles["exp"], useYAML, empty)
 	errs = append(errs, err)
-
-	if len(dictFiles["mdfy"]) > 0 {
-		ext = path.Ext(dictFiles["mdfy"])
-		useYAML = (ext == ".yaml") || (ext == ".yml")
-		xdx, err = ReadExpCfg(dictFiles["mdfy"], useYAML, empty)
-		errs = append(errs, err)
-	}
 
 	err = ReportErrs(errs)
 	if err != nil {
@@ -729,6 +671,9 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 
 	NetworkByID = make(map[int]*networkStruct)
 	NetworkByName = make(map[string]*networkStruct)
+
+	FlowByID = make(map[int]*Flow)
+	FlowByName = make(map[string]*Flow)
 
 	IntrfcByID = make(map[int]*intrfcStruct)
 	IntrfcByName = make(map[string]*intrfcStruct)
@@ -895,6 +840,28 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 		}
 	}
 
+	// fetch the flow descriptions
+	for _, flowDesc := range topoCfg.Flows {
+		// create a runtime representation from its desc representation
+		bgf := createBgfStruct(&flowDesc)
+
+		// nil returned if parameters don't support a flow (like zero rate)
+		if bgf == nil {
+			continue
+		}
+
+		// save pointer to net accessible by id or name
+		FlowByID[bgf.FlowID] = bgf
+		FlowByName[bgf.Name] = bgf
+
+		// for paramObj interface
+		paramObjByID[bgf.Number] = bgf
+		paramObjByName[bgf.Name] = bgf
+
+		// store id -> name for trace
+		tm.AddName(bgf.Number, bgf.Name, "flow")
+	}
+
 	// link the connect fields, now that all interfaces are known
 	// loop over routers
 	for _, rtrDesc := range topoCfg.Routers {
@@ -958,7 +925,6 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 						peerID := cintrfc.Device.DevID()
 						connectIds(topoGraph, devID, peerID, intrfc.Number, cintrfc.Number)
 						connected = true
-						break
 					}
 				}
 			}
@@ -973,6 +939,11 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	}
 }
 
+func createBgfStruct(fd *FlowDesc) *Flow {
+	bfg := CreateFlow(fd.SrcDev, fd.DstDev, fd.ReqRate, fd.FrameSize, fd.Mode, fd.FlowModel, 0, fd.Groups)
+	return bfg
+}
+
 // compatibleIntrfcs checks whether the named pair of interfaces are compatible
 // w.r.t. their state on cable, carry, and wireless
 func compatibleIntrfcs(intrfc1, intrfc2 *intrfcStruct) bool {
@@ -980,50 +951,6 @@ func compatibleIntrfcs(intrfc1, intrfc2 *intrfcStruct) bool {
 		return true
 	}
 	return len(intrfc1.Carry) > 0 && len(intrfc2.Carry) > 0
-}
-
-// checkConnections checks the graph for full connectivity when the -chkc flag was set
-
-func checkConnections(tg map[int][]int) bool {
-	untouched := make(map[int][]int)
-
-	for srcID, dev := range TopoDevByID {
-		srcType := dev.DevType()
-		if srcType != EndptCode {
-			continue
-		}
-		for dstID := range TopoDevByID {
-			dstType := dev.DevType()
-			if dstType != EndptCode {
-				continue
-			}
-			if srcID == dstID {
-				continue
-			}
-			route := findRoute(srcID, dstID)
-			if len(*route) == 0 {
-				_, present := untouched[srcID]
-				if !present {
-					untouched[srcID] = []int{}
-				}
-				untouched[srcID] = append(untouched[srcID], dstID)
-			}
-		}
-	}
-	if len(untouched) == 0 {
-		return true
-	}
-	for srcID, missed := range untouched {
-		srcDev := TopoDevByID[srcID]
-		srcName := srcDev.DevName()
-		mlist := []string{}
-		for _, dstID := range missed {
-			dstDev := TopoDevByID[dstID]
-			mlist = append(mlist, dstDev.DevName())
-		}
-		fmt.Printf("missing paths from %s to %s\n", srcName, strings.Join(mlist, ","))
-	}
-	panic(fmt.Errorf("missing connectivity"))
 }
 
 // addTopoDevLookup puts a new entry in the TopoDevByID and TopoDevByName

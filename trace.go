@@ -6,8 +6,8 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"path"
-	"strconv"
 	"sort"
+	"strconv"
 )
 
 type TraceRecordType int
@@ -17,7 +17,6 @@ const (
 	CmpPtnType
 )
 
-var trtToStr map[TraceRecordType]string = map[TraceRecordType]string{NetworkType: "network", CmpPtnType: "cp"}
 
 type TraceInst struct {
 	TraceTime string
@@ -92,7 +91,6 @@ func (tm *TraceManager) AddName(id int, name string, objDesc string) {
 	}
 }
 
-
 // WriteToFile stores the Traces struct to the file whose name is given.
 // Serialization to json or to yaml is selected based on the extension of this name.
 func (tm *TraceManager) WriteToFile(filename string, globalOrder bool) bool {
@@ -122,13 +120,16 @@ func (tm *TraceManager) WriteToFile(filename string, globalOrder bool) bool {
 			ntm.NameByID[key] = value
 		}
 		ntm.Traces = make(map[int][]TraceInst)
-		ntm.Traces[0] = make([]TraceInst,0)
+		ntm.Traces[0] = make([]TraceInst, 0)
 		for _, valueList := range tm.Traces {
 			ntm.Traces[0] = append(ntm.Traces[0], valueList...)
 		}
 
-		sort.Slice(ntm.Traces[0], func(i,j int) bool {
-			v1, _ := strconv.ParseFloat(ntm.Traces[0][i].TraceTime, 64); v2, _ := strconv.ParseFloat(ntm.Traces[0][j].TraceTime, 64); return v1 < v2})
+		sort.Slice(ntm.Traces[0], func(i, j int) bool {
+			v1, _ := strconv.ParseFloat(ntm.Traces[0][i].TraceTime, 64)
+			v2, _ := strconv.ParseFloat(ntm.Traces[0][j].TraceTime, 64)
+			return v1 < v2
+		})
 		if pathExt == ".yaml" || pathExt == ".YAML" || pathExt == ".yml" {
 			bytes, merr = yaml.Marshal(*ntm)
 		} else if pathExt == ".json" || pathExt == ".JSON" {
@@ -148,7 +149,10 @@ func (tm *TraceManager) WriteToFile(filename string, globalOrder bool) bool {
 	if werr != nil {
 		panic(werr)
 	}
-	f.Close()
+	err := f.Close()
+	if err != nil {
+		panic(err)
+	}
 	return true
 }
 
@@ -212,6 +216,7 @@ type IntrfcTrace struct {
 	Time   float64
 	ObjID  int
 	ExecID int
+	MsgID  int
 	Op     string
 	CQ     string
 }
@@ -228,10 +233,11 @@ func (it *IntrfcTrace) Serialize() string {
 	return string(bytes[:])
 }
 
-func AddIntrfcTrace(tm *TraceManager, vrt vrtime.Time, execID, objID int, op, CQ string) {
+func AddIntrfcTrace(tm *TraceManager, vrt vrtime.Time, execID, msgID, objID int, op, CQ string) {
 	it := new(IntrfcTrace)
 	it.Time = vrt.Seconds()
 	it.ExecID = execID
+	it.MsgID = msgID
 	it.ObjID = objID
 	it.Op = op
 	it.CQ = CQ
@@ -283,5 +289,3 @@ func AddNetTrace(tm *TraceManager, vrt vrtime.Time, nm *NetworkMsg, objID int, o
 	trcInst := TraceInst{TraceTime: traceTime, TraceType: "network", TraceStr: ntrStr}
 	tm.AddTrace(vrt, ntr.ExecID, trcInst)
 }
-
-

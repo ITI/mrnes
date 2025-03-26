@@ -136,7 +136,7 @@ func EqAttrbs(attrbs1, attrbs2 []AttrbStruct) bool {
 }
 
 // ExpParameter struct describes an input to experiment configuration at run-time. It specifies
-//   - ParamObj identifies the kind of thing being configured : Switch, Router, Endpt, Interface, or Network
+//   - ParamObj identifies the kind of thing being configured : Switch, Router, Endpoint, Interface, or Network
 //   - Attributes is a list of attributes, each of which are required for the parameter value to be applied.
 type ExpParameter struct {
 	// Type of thing being configured
@@ -293,7 +293,11 @@ func (ecd *ExpCfgDict) WriteToFile(filename string) error {
 	if werr != nil {
 		panic(werr)
 	}
-	f.Close()
+
+	err := f.Close()
+	if err != nil {
+		panic(err)
+	}
 	return werr
 }
 
@@ -396,7 +400,10 @@ func (excfg *ExpCfg) WriteToFile(filename string) error {
 	if werr != nil {
 		panic(werr)
 	}
-	f.Close()
+	err := f.Close()
+	if err != nil {
+		panic(err)
+	}
 
 	return werr
 }
@@ -444,11 +451,17 @@ func UpdateExpCfg(orgfile, updatefile string, useYAML bool, dict []byte) {
 		panic(err2)
 	}
 	for _, update := range updateCfg.Parameters {
-		expCfg.AddParameter(update.ParamObj, update.Attributes, update.Param, update.Value)
+		err := expCfg.AddParameter(update.ParamObj, update.Attributes, update.Param, update.Value)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	// write out the modified configuration
-	expCfg.WriteToFile(orgfile)
+	err = expCfg.WriteToFile(orgfile)
+	if err != nil {
+		panic(err)
+	}
 }
 
 // ExpParamObjs , ExpAttributes , and ExpParams hold descriptions of the types of objects
@@ -461,20 +474,20 @@ var ExpParams map[string][]string
 // GetExpParamDesc returns ExpParamObjs, ExpAttributes, and ExpParams after ensuring that they have been build
 func GetExpParamDesc() ([]string, map[string][]string, map[string][]string) {
 	if ExpParamObjs == nil {
-		ExpParamObjs = []string{"Switch", "Router", "Endpt", "Interface", "Network"}
+		ExpParamObjs = []string{"Switch", "Router", "Endpoint", "Interface", "Network"}
 		ExpAttributes = make(map[string][]string)
 		ExpAttributes["Switch"] = []string{"name", "group", "model", "*"}
 		ExpAttributes["Router"] = []string{"name", "group", "model", "*"}
-		ExpAttributes["Endpt"] = []string{"name", "model", "group", "*"}
+		ExpAttributes["Endpoint"] = []string{"name", "model", "group", "*"}
 		ExpAttributes["Interface"] = []string{"name", "group", "devtype", "devname", "media", "network", "*"}
 		ExpAttributes["Network"] = []string{"name", "group", "media", "scale", "*"}
 		ExpParams = make(map[string][]string)
-		ExpParams["Switch"] = []string{"model", "buffer", "trace", "simple" }
-		ExpParams["Router"] = []string{"model", "buffer", "trace", "simple" }
-		ExpParams["Endpt"] = []string{"trace", "model", "bckgrndRate", "bckgrndSrv"}
-		ExpParams["Network"] = []string{"latency", "bandwidth", "bckgrndBW", "capacity", "drop", "trace"}
+		ExpParams["Switch"] = []string{"model", "buffer", "trace"}
+		ExpParams["Router"] = []string{"model", "buffer", "trace"}
+		ExpParams["Endpoint"] = []string{"trace", "model", "interruptdelay", "bckgrndSrv"}
+		ExpParams["Network"] = []string{"latency", "bandwidth", "capacity", "drop", "trace"}
 		ExpParams["Interface"] = []string{"latency", "delay", "buffer", "bandwidth",
-			"bckgrndBW", "MTU", "rsrvd", "drop", "trace"}
+			"MTU", "rsrvd", "drop", "trace"}
 	}
 
 	return ExpParamObjs, ExpAttributes, ExpParams
