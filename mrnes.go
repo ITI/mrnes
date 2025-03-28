@@ -392,6 +392,26 @@ func SetTopoParameters(expCfg *ExpCfg) {
 	intrfcParams := []ExpParameter{}
 	flowParams := []ExpParameter{}
 
+
+	for _, param := range expCfg.Parameters {
+		switch param.ParamObj {
+		case "Endpoint":
+			endptParams = append(endptParams, param)
+		case "Router":
+			rtrParams = append(rtrParams, param)
+		case "Switch":
+			swtchParams = append(swtchParams, param)
+		case "Interface":
+			intrfcParams = append(intrfcParams, param)
+		case "Network":
+			netParams = append(netParams, param)
+		case "Flow":
+			flowParams = append(flowParams, param)
+		default:
+			panic("surprise ParamObj")
+		}
+	}
+
 	// reorder each list to assure the application order of most-general-first, and remove duplicates
 	endptParams = reorderExpParams(endptParams)
 	rtrParams = reorderExpParams(rtrParams)

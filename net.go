@@ -111,15 +111,18 @@ func (iqs *intrfcQStruct) popNetworkMsg() *NetworkMsg {
 }
 
 // addNetworkMsg adds a network message to the indicated side of the interface
-func (iqs *intrfcQStruct) addNetworkMsg(evtMgr *evtm.EventManager, nm *NetworkMsg) {
+func (iqs *intrfcQStruct) addNetworkMsg(evtMgr *evtm.EventManager, nm *NetworkMsg, ingress bool) {
 	time := evtMgr.CurrentSeconds()
 	iqw := new(iQWrapper)
 	iqw.arrival = time
 	iqw.nm = nm
 	iqs.msgQueue = append(iqs.msgQueue, iqw)
-
+    cabledIngress := ingress && (iqs.intrfc.Cable != nil) 
 	if len(iqs.msgQueue) == 1 {
-		strmEmpties := iqs.strmQ.emptiesAfter(time)
+        var strmEmpties float64
+        if !cabledIngress {
+		    strmEmpties =  iqs.strmQ.emptiesAfter(time)
+        }
 
 		// schedule an entry into service at time strmEmpties if strictly in the future
 		if strmEmpties > 0.0 {
@@ -1899,7 +1902,7 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	// the exit step of the egress interface
 	newMsg := new(NetworkMsg)
 	*(newMsg) = nm
-	intrfc.State.EgressIntrfcQ.addNetworkMsg(evtMgr, newMsg)
+	intrfc.State.EgressIntrfcQ.addNetworkMsg(evtMgr, newMsg, false)
 	return nil
 }
 
@@ -2017,7 +2020,7 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	// the exit step of the ingress interface
 	newMsg := new(NetworkMsg)
 	*(newMsg) = nm
-	intrfc.State.IngressIntrfcQ.addNetworkMsg(evtMgr, newMsg)
+	intrfc.State.IngressIntrfcQ.addNetworkMsg(evtMgr, newMsg, true)
 	return nil
 }
 
