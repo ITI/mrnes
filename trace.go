@@ -17,7 +17,6 @@ const (
 	CmpPtnType
 )
 
-
 type TraceInst struct {
 	TraceTime string
 	TraceType string

@@ -49,9 +49,9 @@ func createTask(op string, arrive, req float64, pri int, timeslice float64, msg 
 
 // TaskScheduler holds data structures supporting the multi-core scheduling
 type TaskScheduler struct {
-	cores      int     // number of computational cores
-	inBckgrnd  int     // number of cores being used for background traffic
-	bckgrndOn  bool    // set to true when background processing is in use
+	cores      int  // number of computational cores
+	inBckgrnd  int  // number of cores being used for background traffic
+	bckgrndOn  bool // set to true when background processing is in use
 	waiting    map[int][]*Task
 	numWaiting int   // total waiting, at all priority levels
 	priorities []int // list of existing priorities, sorted in decreasing priority

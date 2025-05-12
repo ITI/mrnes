@@ -975,16 +975,16 @@ func (rf *RouterFrame) Transform() RouterDesc {
 
 	return *rd
 }
+
 // FlowFrame describes parameters of a Router in the topology in pre-serialized form
 type FlowFrame struct {
 	Name      string   `json:"name" yaml:"name"`
 	SrcDev    string   `json:"srcdev"  yaml:"srcdev"`
 	DstDev    string   `json:"dstdev"  yaml:"dstdev"`
 	Mode      string   `json:"mode"    yaml:"mode"`
-	FlowModel string   `json:"flowmodel"  yaml:"flowmodel"`
 	ReqRate   float64  `json:"reqrate" yaml:"reqrate"`
 	FrameSize int      `json:"framesize" yaml:"framesize"`
-	Groups  []string   `json:"groups" yaml:"groups"`
+	Groups    []string `json:"groups" yaml:"groups"`
 }
 
 // DefaultFlowName returns a unique name for a flow
@@ -993,7 +993,7 @@ func DefaultFlowName() string {
 }
 
 // CreateFlowFrame is a constructor, stores (possibly creates default) name
-func CreateFlowFrame(name, srcDev, dstDev, mode, flowmodel string, reqRate float64, frameSize int) *FlowFrame {
+func CreateFlowFrame(name, srcDev, dstDev, mode string, reqRate float64, frameSize int) *FlowFrame {
 	ff := new(FlowFrame)
 	numberOfFlows += 1
 
@@ -1004,8 +1004,7 @@ func CreateFlowFrame(name, srcDev, dstDev, mode, flowmodel string, reqRate float
 	ff.Name = name
 	ff.SrcDev = srcDev
 	ff.DstDev = dstDev
-	ff.Mode   = mode
-	ff.FlowModel = flowmodel
+	ff.Mode = mode
 	ff.ReqRate = reqRate
 	ff.FrameSize = frameSize
 
@@ -1033,7 +1032,7 @@ func (ff *FlowFrame) DevID() string {
 
 // DevModel returns the NetDevice model code, if any
 func (ff *FlowFrame) DevModel() string {
-	return "" 
+	return ""
 }
 
 // DevInterfaces returns the slice of IntrfcFrame held by the NetDevice, if any
@@ -1056,14 +1055,13 @@ func (ff *FlowFrame) AddGroup(groupName string) {
 // Transform returns a serializable RouterDesc, transformed from a FlowFrame.
 func (ff *FlowFrame) Transform() FlowDesc {
 	fd := new(FlowDesc)
-	fd.Name   = ff.Name
+	fd.Name = ff.Name
 	fd.SrcDev = ff.SrcDev
 	fd.DstDev = ff.DstDev
-	fd.Mode   = ff.Mode 
-	fd.FlowModel = ff.FlowModel
-	fd.ReqRate   = ff.ReqRate
+	fd.Mode = ff.Mode
+	fd.ReqRate = ff.ReqRate
 	fd.FrameSize = ff.FrameSize
-	fd.Groups    = ff.Groups
+	fd.Groups = ff.Groups
 	return *fd
 }
 
@@ -1074,10 +1072,9 @@ type FlowDesc struct {
 	SrcDev    string   `json:"srcdev"  yaml:"srcdev"`
 	DstDev    string   `json:"dstdev"  yaml:"dstdev"`
 	Mode      string   `json:"mode"    yaml:"mode"`
-	FlowModel string   `json:"flowmodel"  yaml:"flowmodel"`
 	ReqRate   float64  `json:"reqrate" yaml:"reqrate"`
 	FrameSize int      `json:"framesize" yaml:"framesize"`
-	Groups  []string   `json:"groups" yaml:"groups"`
+	Groups    []string `json:"groups" yaml:"groups"`
 }
 
 // SwitchDesc holds a serializable representation of a switch.

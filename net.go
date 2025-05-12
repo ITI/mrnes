@@ -15,6 +15,7 @@ import (
 	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 	"math"
+	_ "os"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,11 +56,12 @@ type intrfcIDPair struct {
 
 // intrfcQStruct holds information about packets and flows at an interface
 type intrfcQStruct struct {
-	intrfc   *intrfcStruct // interface this is attached to
-	ingress  bool          // true if this queue is for the ingress side of the interface
-	lambda   float64       // sum of rates of flows approaching this side of the interface
-	msgQueue []*iQWrapper  // messages enqueued for passage through the interface
-	strmQ    *strmQueue    // represents the stream of background packets through this side of the interface
+	intrfc    *intrfcStruct // interface this is attached to
+	ingress   bool          // true if this queue is for the ingress side of the interface
+	streaming bool          // true if there are strm packets at this interface
+	lambda    float64       // sum of rates of flows approaching this side of the interface
+	msgQueue  []*iQWrapper  // messages enqueued for passage through the interface
+	strmQ     *strmSet      // represents the stream of background packets through this side of the interface
 }
 
 type iQWrapper struct {
@@ -76,31 +78,24 @@ func createIntrfcQueue(intrfc *intrfcStruct, ingress bool) *intrfcQStruct {
 	return iqs
 }
 
+func (iqs *intrfcQStruct) qlen() int {
+	return len(iqs.msgQueue)
+}
+
+func (iqs *intrfcQStruct) firstMsg() *NetworkMsg {
+	if len(iqs.msgQueue) > 0 {
+		return iqs.msgQueue[0].nm
+	}
+	return nil
+}
+
 // initIntrfcQueueStrm initializes the strmQ structure describing the flows through the interface
 func (iqs *intrfcQStruct) initIntrfcQueueStrm(strmRate float64, strmPcktLen int,
-	intrfcBndwdth float64, interArrivalDist string, rng *rngstream.RngStream) {
-	iqs.strmQ = createStrmQueue(strmRate, intrfcBndwdth, strmPcktLen, rng)
-	iqs.strmQ.adjustInterArrivalDist(interArrivalDist)
-}
-
-func (iqs *intrfcQStruct) adjustIntrfcStrmRate(strmRate float64) {
-	iqs.strmQ.adjustStrmRate(strmRate)
-}
-
-func (iqs *intrfcQStruct) adjustIntrfcStrmFrameLen(msgLen int) {
-	iqs.strmQ.adjustStrmFrameLen(msgLen)
-}
-
-func (iqs *intrfcQStruct) adjustIntrfcBndwdth(bndwdth float64) {
-	iqs.strmQ.adjustIntrfcBndwdth(bndwdth)
-}
-
-func (iqs *intrfcQStruct) adjustInterArrivalDist(dist string) {
-	iqs.strmQ.adjustInterArrivalDist(dist)
+	intrfcBndwdth float64, rng *rngstream.RngStream) {
+	iqs.strmQ = createStrmSet(iqs, strmRate, intrfcBndwdth, strmPcktLen, rng)
 }
 
 func (iqs *intrfcQStruct) popNetworkMsg() *NetworkMsg {
-	iqs.strmQ.srtServing()
 	if len(iqs.msgQueue) == 0 {
 		return nil
 	}
@@ -110,35 +105,79 @@ func (iqs *intrfcQStruct) popNetworkMsg() *NetworkMsg {
 	return iqw.nm
 }
 
+func (iqs *intrfcQStruct) firstNetworkMsg() *NetworkMsg {
+	if len(iqs.msgQueue) == 0 {
+		return nil
+	}
+
+	iqw := iqs.msgQueue[0]
+	return iqw.nm
+}
+
+func queueStr(msgQueue []*iQWrapper) string {
+	rtn := []string{}
+	for idx := 0; idx < len(msgQueue); idx += 1 {
+		iqw := msgQueue[idx]
+		element := fmt.Sprintf("%f %d", iqw.arrival, iqw.nm.MsgID)
+		rtn = append(rtn, element)
+	}
+	result := strings.Join(rtn, ",")
+	return result
+}
+
+func computeServiceTime(msgLen int, bndwdth float64) float64 {
+	msgLenMbits := float64(8*msgLen) / 1e6
+	return msgLenMbits / bndwdth
+}
+
 // addNetworkMsg adds a network message to the indicated side of the interface
-func (iqs *intrfcQStruct) addNetworkMsg(evtMgr *evtm.EventManager, nm *NetworkMsg, ingress bool) {
+func (iqs *intrfcQStruct) addNetworkMsg(evtMgr *evtm.EventManager, nm *NetworkMsg) {
 	time := evtMgr.CurrentSeconds()
+	nm.intrfcArr = time
+
+	intrfc := iqs.intrfc
+
 	iqw := new(iQWrapper)
 	iqw.arrival = time
 	iqw.nm = nm
 	iqs.msgQueue = append(iqs.msgQueue, iqw)
-    cabledIngress := ingress && (iqs.intrfc.Cable != nil) 
-	if len(iqs.msgQueue) == 1 {
-        var strmEmpties float64
-        if !cabledIngress {
-		    strmEmpties =  iqs.strmQ.emptiesAfter(time)
-        }
 
-		// schedule an entry into service at time strmEmpties if strictly in the future
-		if strmEmpties > 0.0 {
-			evtMgr.Schedule(iqs, nm.MsgID, enterIntrfcService, vrtime.SecondsToTime(strmEmpties))
+	// if we don't have virtual streaming packets and this is an arrival to an empty queue, just enter it into service
+	inTransit := (iqs.ingress && iqs.intrfc.State.IngressTransit) || (!iqs.ingress && iqs.intrfc.State.EgressTransit)
+	if !iqs.streaming && !inTransit {
+		if len(iqs.msgQueue) == 1 {
+			enterIntrfcService(evtMgr, iqs, nm.MsgID)
+		}
+		return
+	}
+
+	// the interface streams packets
+	if len(iqs.msgQueue) == 1 && !inTransit {
+		// strmQ needs to have been running because this message joined an empty queue
+		// advance the flow simulation up to time
+
+		nxtMsg := iqs.msgQueue[0].nm
+		serviceTime := computeServiceTime(nxtMsg.MsgLen, intrfc.State.Bndwdth)
+		advanced, qDelay := iqs.strmQ.queueingDelay(evtMgr.CurrentSeconds(), nxtMsg.intrfcArr, 
+			serviceTime, nxtMsg.prevIntrfcID)
+
+		msrArrivals = false
+
+		// schedule an entry into service at time
+		if advanced {
+			evtMgr.Schedule(iqs, nxtMsg.MsgID, enterIntrfcService, vrtime.SecondsToTime(qDelay))
 		} else {
 			// we go straight into service and so can skip the scheduling step
-			enterIntrfcService(evtMgr, iqs, nm.MsgID)
+			enterIntrfcService(evtMgr, iqs, nxtMsg.MsgID)
 		}
 	}
 }
 
-func (iqs *intrfcQStruct) addFlowRate(rate float64) {
+func (iqs *intrfcQStruct) addFlowRate(flowID int, rate float64) {
 	iqs.lambda += rate
 }
 
-func (iqs *intrfcQStruct) rmFlowRate(rate float64) {
+func (iqs *intrfcQStruct) rmFlowRate(flowID int, rate float64) {
 	iqs.lambda -= rate
 }
 
@@ -167,6 +206,8 @@ const (
 	FlowSrcConst = iota
 	FlowSrcRandom
 )
+
+var msrArrivals bool = false
 
 // FlowAction describes the reason for the flow message, that it is starting, ending, or changing the request rate
 type FlowAction int
@@ -213,7 +254,7 @@ type NetworkPortal struct {
 	RequestRate   map[int]float64    // indexed by flowID to get requested arrival rate
 	AcceptedRate  map[int]float64    // indexed by flowID to get accepted arrival rate
 	Mode          map[int]string     // indexed by flowID to record mode of flow
-	Elastic		  map[int]bool       // indexed by flowID to record whether flow is elastic
+	Elastic       map[int]bool       // indexed by flowID to record whether flow is elastic
 	Pckt          map[int]bool       // indexed by flowID to record whether flow is packet
 	Connections   map[int]int        // indexed by connectID to get flowID
 	InvConnection map[int]int        // indexed by flowID to get connectID
@@ -246,9 +287,9 @@ func CreateNetworkPortal() *NetworkPortal {
 	np.ReportRtnDst = make(map[int]*rtnRecord)
 	np.RequestRate = make(map[int]float64)
 	np.AcceptedRate = make(map[int]float64)
-	np.Elastic      = make(map[int]bool)
-	np.Pckt		    = make(map[int]bool)
-	np.Mode         = make(map[int]string)
+	np.Elastic = make(map[int]bool)
+	np.Pckt = make(map[int]bool)
+	np.Mode = make(map[int]string)
 	np.Connections = make(map[int]int)
 	np.InvConnection = make(map[int]int)
 	np.LatencyConsts = make(map[int]float64)
@@ -583,27 +624,33 @@ type intrfcStruct struct {
 
 // The  intrfcState holds parameters descriptive of the interface's capabilities
 type intrfcState struct {
-	Bndwdth        float64 // maximum bandwidth (in Mbytes/sec)
-	BufferSize     float64 // buffer capacity (in Mbytes)
-	Latency        float64 // time the leading bit takes to traverse the wire out of the interface
-	Delay          float64 // time the leading bit takes to traverse the interface
-	IngressTransit bool
-	EgressTransit  bool
-	MTU            int  // maximum packet size (bytes)
-	Trace          bool // switch for calling add trace
-	Drop           bool // whether to permit packet drops
+	Bndwdth    float64 // maximum bandwidth (in Mbytes/sec)
+	BufferSize float64 // buffer capacity (in Mbytes)
+	Latency    float64 // time the leading bit takes to traverse the wire out of the interface
+	Delay      float64 // time the leading bit takes to traverse the interface
+
+	IngressTransit      bool
+	IngressTransitMsgID int
+	EgressTransit       bool
+	EgressTransitMsgID  int
+
+	MTU   int  // maximum packet size (bytes)
+	Trace bool // switch for calling add trace
+	Drop  bool // whether to permit packet drops
 
 	ToIngress   map[int]float64 // sum of flow rates into ingress side of device
 	ThruIngress map[int]float64 // sum of flow rates out of ingress side of device
 	ToEgress    map[int]float64 // sum of flow rates into egress side of device
 	ThruEgress  map[int]float64 // sum of flow rates out of egress side device
 
-	PcktClass      float64 // fraction of bandwidth reserved for packets
-	IngressLambda  float64 // sum of rates of flows approach interface from ingress side.
-	EgressLambda   float64
-	FlowModel      string
-	IngressIntrfcQ *intrfcQStruct
-	EgressIntrfcQ  *intrfcQStruct
+	NxtDelayByIntrfc map[int]float64
+
+	IngressLambda   float64 // sum of rates of flows approach interface from ingress side.
+	EgressLambda    float64
+	FlowModel       string
+	IngressIntrfcQ  *intrfcQStruct
+	EgressIntrfcQ   *intrfcQStruct
+	StrmServiceTime float64
 }
 
 // createIntrfcState is a constructor, assumes defaults on unspecified attributes
@@ -617,6 +664,9 @@ func createIntrfcState(intrfc *intrfcStruct) *intrfcState {
 	iss.ThruIngress = make(map[int]float64)
 	iss.ToEgress = make(map[int]float64)
 	iss.ThruEgress = make(map[int]float64)
+
+	iss.NxtDelayByIntrfc = make(map[int]float64)
+
 	iss.EgressLambda = 0.0
 	iss.IngressLambda = 0.0
 	iss.FlowModel = "expon"
@@ -626,9 +676,9 @@ func createIntrfcState(intrfc *intrfcStruct) *intrfcState {
 
 	// put in default stream rate of zero and bandwidth of 1000, to
 	// be modified as updated.
-	iss.IngressIntrfcQ.initIntrfcQueueStrm(0.0, 1000, 1000.0, "exponential", rng)
+	iss.IngressIntrfcQ.initIntrfcQueueStrm(0.0, 1000, 1000.0, rng)
 	iss.EgressIntrfcQ = createIntrfcQueue(intrfc, false)
-	iss.EgressIntrfcQ.initIntrfcQueueStrm(0.0, 1000, 1000.0, "exponential", rng)
+	iss.EgressIntrfcQ.initIntrfcQueueStrm(0.0, 1000, 1000.0, rng)
 	return iss
 }
 
@@ -790,12 +840,8 @@ func (intrfc *intrfcStruct) setParam(paramType string, value valueStruct) {
 	case "bandwidth":
 		// units of bandwidth are Mbits/sec
 		intrfc.State.Bndwdth = value.floatValue
-		intrfc.State.IngressIntrfcQ.adjustIntrfcBndwdth(value.floatValue)
-		intrfc.State.EgressIntrfcQ.adjustIntrfcBndwdth(value.floatValue)
-	case "flowmodel":
-		intrfc.State.FlowModel = value.stringValue
-		intrfc.State.IngressIntrfcQ.adjustInterArrivalDist(value.stringValue)
-		intrfc.State.EgressIntrfcQ.adjustInterArrivalDist(value.stringValue)
+		intrfc.State.IngressIntrfcQ.strmQ.setBndwdth(value.floatValue)
+		intrfc.State.EgressIntrfcQ.strmQ.setBndwdth(value.floatValue)
 	case "buffer":
 		// units of buffer are Mbytes
 		intrfc.State.BufferSize = value.floatValue
@@ -898,14 +944,16 @@ func (intrfc *intrfcStruct) IsCongested(ingress bool) bool {
 	// !( usedBndwdth < intrfc.State.Bndwdth )
 	//
 	bndwdth := intrfc.State.Bndwdth
-	return (math.Abs(usedBndwdth-bndwdth) < 1e-3) 
+	return (math.Abs(usedBndwdth-bndwdth) < 1e-3)
 }
 
 // ChgFlowRate is called in the midst of changing the flow rates.
 // The rate value 'rate' is one that flow has at this point in the
 // computation, and the per-flow interface data structures are adjusted
-// to reflect that
-func (intrfc *intrfcStruct) ChgFlowRate(flowID int, rate float64, ingress bool) {
+// to reflect that.
+// srcIntrfcID identifies the interface from which the flow came to intrfc,
+// flowID the flow with the rate change
+func (intrfc *intrfcStruct) ChgFlowRate(srcIntrfcID int, flowID int, rate float64, ingress bool) {
 	var ifq *intrfcQStruct
 	var oldRate float64
 	if ingress {
@@ -922,7 +970,7 @@ func (intrfc *intrfcStruct) ChgFlowRate(flowID int, rate float64, ingress bool) 
 		intrfc.State.EgressLambda += (rate - oldRate)
 	}
 	ifq.lambda += (rate - oldRate)
-	ifq.strmQ.adjustStrmRate(ifq.lambda)
+	ifq.strmQ.adjustStrmRate(srcIntrfcID, flowID, ifq.lambda)
 }
 
 // RmFlow adjusts data structures to reflect the removal of the identified flow
@@ -969,7 +1017,6 @@ type networkState struct {
 
 	ClassBndwdth map[int]float64 // map of reservation ID to reserved bandwidth
 
-	PcktClass float64
 	// revisit
 	Flows   map[int]ActiveRec
 	Forward map[int]map[intrfcIDPair]float64
@@ -1129,7 +1176,6 @@ func createNetworkState(name string) *networkState {
 	ns.Packets = 0
 	ns.Drop = false
 	ns.Rngstrm = rngstream.New(name)
-	ns.PcktClass = 0.05
 	return ns
 }
 
@@ -1802,23 +1848,28 @@ var NetworkMsgID int = 1
 // we can find 'the next' step in the route.  One value is a pointer to this route list,
 // and the final value is a pointe to an inter-func comp pattern message.
 type NetworkMsg struct {
-	MsgID      int             // ID created message is delivered to network
-	MsrID      int             // measure identity ID from message delivered to network
-	StepIdx    int             // position within the route from source to destination
-	Route      *[]intrfcsToDev // pointer to description of route
-	Connection ConnDesc        // {DiscreteConn, MajorFlowConn, MinorFlowConn}
-	ExecID     int
-	FlowID     int            // flow id given by app at entry
-	ConnectID  int            // connection identifier
-	NetMsgType NetworkMsgType // enum type packet,
-	PcktRate   float64        // rate rom source
-	Rate       float64        // flow rate if FlowID >0 (meaning a flow)
-	StartTime  float64        // simuation time when the message entered the network
-	PrArrvl    float64        // probablity of arrival
-	MsgLen     int            // length of the entire message, in bytes
-	PcktIdx    int            // index of packet with msg
-	NumPckts   int            // number of packets in the message this is part of
-	Msg        any            // message being carried.
+	MsgID          int             // ID created message is delivered to network
+	MsrID          int             // measure identity ID from message delivered to network
+	StepIdx        int             // position within the route from source to destination
+	Route          *[]intrfcsToDev // pointer to description of route
+	Connection     ConnDesc        // {DiscreteConn, MajorFlowConn, MinorFlowConn}
+	ExecID         int
+	FlowID         int            // flow id given by app at entry
+	ConnectID      int            // connection identifier
+	NetMsgType     NetworkMsgType // enum type packet,
+	PcktRate       float64        // rate rom source
+	Rate           float64        // flow rate if FlowID >0 (meaning a flow)
+	Syncd          []int          // IDs of flows with which this message has synchronized
+	StartTime      float64        // simuation time when the message entered the network
+	PrArrvl        float64        // probablity of arrival
+	MsgLen         int            // length of the entire message, in bytes
+	PcktIdx        int            // index of packet with msg
+	NumPckts       int            // number of packets in the message this is part of
+	Msg            any            // message being carried.
+	intrfcArr      float64
+	StrmPckt       bool
+	prevIntrfcID   int     // ID of interface through which message last passed
+	prevIntrfcSend float64 // time at which message left previous interface
 }
 
 // carriesPckt returns a boolean indicating whether the message is a packet (verses flow)
@@ -1843,7 +1894,7 @@ func currentIntrfcs(nm *NetworkMsg) (*intrfcStruct, *intrfcStruct, *networkStruc
 	srcIntrfc := IntrfcByID[srcIntrfcID]
 	dstIntrfc := IntrfcByID[dstIntrfcID]
 
-	var ns *networkStruct 
+	var ns *networkStruct
 	netID := (*nm.Route)[nm.StepIdx].netID
 	if netID != -1 {
 		ns = NetworkByID[netID]
@@ -1880,16 +1931,25 @@ func transitDelay(nm *NetworkMsg) (float64, *networkStruct) {
 	return delay, net
 }
 
+var lastEntrance float64
+var interdist map[int]int = make(map[int]int)
+var NumArrivals int
+var Foreground int
+
+var StrmLags int
+var FgLags int
+
 // enterEgressIntrfc handles the arrival of a packet to the egress interface side of a device.
 // It will have been forwarded from the device if an endpoint, or from the ingress interface
 func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any {
 	// cast context argument to interface
 	intrfc := egressIntrfc.(*intrfcStruct)
 
-	// cast data argument to network message
+	// cast data argument to network message. Notice that
+	// the entire message is passed, not just a pointer to it.
 	nm := msg.(NetworkMsg)
 
-	nowInSecs := evtMgr.CurrentSeconds()
+	nowInSecs := roundFloat(evtMgr.CurrentSeconds(), rdigits)
 
 	// record arrival
 	intrfc.addTrace("enterEgressIntrfc", &nm, nowInSecs)
@@ -1902,8 +1962,33 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 	// the exit step of the egress interface
 	newMsg := new(NetworkMsg)
 	*(newMsg) = nm
-	intrfc.State.EgressIntrfcQ.addNetworkMsg(evtMgr, newMsg, false)
+	intrfc.State.EgressIntrfcQ.addNetworkMsg(evtMgr, newMsg)
 	return nil
+}
+
+// advance has already just been called on the strmSet
+func schedNxtMsgToIntrfc(evtMgr *evtm.EventManager, intrfcQ *intrfcQStruct) {
+	// bring in next message across egress interface, if present
+	currentTime := evtMgr.CurrentSeconds()
+
+	// are there foreground messages waiting to be processed?
+	if len(intrfcQ.msgQueue) > 0 {
+		if intrfcQ.intrfc.Name == "intrfc@hubWest-rtr" && !intrfcQ.ingress {
+			msrArrivals = true
+		}
+
+		nxtMsg := intrfcQ.msgQueue[0].nm
+		serviceTime := computeServiceTime(nxtMsg.MsgLen, intrfcQ.intrfc.State.Bndwdth)
+		advanced, qDelay := intrfcQ.strmQ.queueingDelay(currentTime, nxtMsg.intrfcArr, serviceTime, nxtMsg.prevIntrfcID)
+
+		msrArrivals = false
+
+		if advanced {
+			evtMgr.Schedule(intrfcQ, nxtMsg.MsgID, enterIntrfcService, vrtime.SecondsToTime(qDelay))
+		} else {
+			enterIntrfcService(evtMgr, intrfcQ, nxtMsg.MsgID)
+		}
+	}
 }
 
 // exitEgressIntrfc implements an event handler for the completed departure of a message from an interface.
@@ -1911,7 +1996,12 @@ func enterEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, msg any) any
 // of the message at the ingress interface
 func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, data any) any {
 	intrfc := egressIntrfc.(*intrfcStruct)
-	nm := intrfc.State.EgressIntrfcQ.popNetworkMsg()
+	intrfc.State.EgressTransit = false
+	intrfcQ := intrfc.State.EgressIntrfcQ
+
+	currentTime := evtMgr.CurrentSeconds()
+
+	nm := data.(*NetworkMsg)
 
 	if nm == nil {
 		panic(fmt.Errorf("popped empty network message queue"))
@@ -1922,7 +2012,6 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, data any) any
 	// of the message to the ingress interface after that delay.
 	nxtIntrfc := IntrfcByID[(*nm.Route)[nm.StepIdx].dstIntrfcID]
 
-	currentTime := evtMgr.CurrentSeconds()
 	// create a vrtime representation of when service is completed that starts now
 	// vtDepartTime := vrtime.SecondsToTime(evtMgr.CurrentSeconds()+departSrv)
 	vtDepartTime := vrtime.SecondsToTime(currentTime)
@@ -1942,57 +2031,22 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, data any) any
 	// log the completed departure
 	net.LogNetEvent(vtDepartTime, nm, "enter")
 
-	evtMgr.Schedule(nxtIntrfc, *nm, enterIngressIntrfc, vrtime.SecondsToTime(netDelay))
+	// alignment is for debugging only
+	// alignment := alignServiceTime(nxtIntrfc, roundFloat(currentTime+netDelay, rdigits), nm.MsgLen)
 
-	// bring in next message across egress interface, if present
-	intrfcQ := intrfc.State.EgressIntrfcQ
-	if len(intrfcQ.msgQueue) > 0 {
-		var nxtPcktSrv float64
-		var nxtPcktArr = intrfcQ.msgQueue[0].arrival
-		nxtMsgID := intrfcQ.msgQueue[0].nm.MsgID
+	priority := int64(intrfc.Device.DevRng().RandInt(1, 1000000))
 
-		present, nxtStrmArr := intrfcQ.strmQ.earliestArrival()
+	// remember that we passed through this interface
+	nm.prevIntrfcID = intrfc.Number
 
-		if !present || (nxtPcktArr < nxtStrmArr) {
-			enterIntrfcService(evtMgr, intrfcQ, nxtMsgID)
-		} else {
-			precedingWork := intrfcQ.strmQ.precedes(nxtPcktArr)
-			nxtPcktSrv = roundFloat(currentTime+precedingWork, rdigits)
-			intrfcQ.strmQ.srtServing()
-			evtMgr.Schedule(intrfcQ, nxtMsgID, enterIntrfcService, vrtime.SecondsToTime(nxtPcktSrv))
-		}
-	} else {
-		// empty intrfcQ.msgQueue
-		intrfcQ.strmQ.srtServing()
-	}
+	// pass time of last message from this interface to the destination,
+	// as this will be used at next interface for constructing
+	// strm arrival times that are synchronized with the foreground packet sends
+	evtMgr.Schedule(nxtIntrfc, *nm, enterIngressIntrfc, vrtime.SecondsToTimePri(netDelay, priority))
 
-	/*
-		// sample the probability of a successful transition and packet drop
-		// potentially drop the message
-		if intrfc.Cable == nil || intrfc.Media != Wired {
+	intrfc.State.NxtDelayByIntrfc[nxtIntrfc.Number] = netDelay
 
-			// get aggregate accepted arrival rate of flows from within the device to the egress interface
-			lambda := intrfc.State.EgressLambda
-
-			// message size in units of Mbits
-			m := float64(msgLen*8) / 1e+6
-
-			// estimated number of messages of this size that 'fit' in the network channel with
-			// a time length of netDelay
-			N := int(math.Round(netDelay * lambda * 1e+6 / m))
-
-			// estimate packet loss via M/M/1 formula (N.B. need to change this to M/D/1 queue formula)
-			prDrop := estPrDrop(lambda, net.NetState.Bndwdth, N)
-			nm.PrArrvl *= (1.0 - prDrop)
-
-			// if configured to drop packets, sample a uniform 0,1, if less than prDrop then drop the packet
-			if net.PcktDrop() && (intrfc.Device.DevRng().RandU01() < prDrop) {
-				// dropping packet
-				// there is some logic for dealing with packet loss
-				return nil
-			}
-		}
-	*/
+	schedNxtMsgToIntrfc(evtMgr, intrfcQ)
 
 	// event-handlers are required to return _something_
 	return nil
@@ -2020,13 +2074,29 @@ func enterIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) a
 	// the exit step of the ingress interface
 	newMsg := new(NetworkMsg)
 	*(newMsg) = nm
-	intrfc.State.IngressIntrfcQ.addNetworkMsg(evtMgr, newMsg, true)
+	intrfc.State.IngressIntrfcQ.addNetworkMsg(evtMgr, newMsg)
 	return nil
+}
+
+func alignServiceTime(intrfc *intrfcStruct, time float64, msgLen int) float64 {
+	serviceTime := roundFloat(float64(msgLen*8)/(intrfc.State.Bndwdth*1e6), rdigits)
+	ticks := int(time / serviceTime)
+	if math.Abs(float64(ticks)*serviceTime-time) < eqlThrsh {
+		return 0.0
+	}
+	return roundFloat(float64(ticks+1)*serviceTime-time, rdigits)
 }
 
 func arriveIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) any {
 	intrfc := ingressIntrfc.(*intrfcStruct)
-	nm := intrfc.State.IngressIntrfcQ.popNetworkMsg()
+	intrfc.State.IngressTransit = false
+	intrfcQ := intrfc.State.IngressIntrfcQ
+	currentTime := evtMgr.CurrentSeconds()
+	nm := msg.(*NetworkMsg)
+
+	// remember that we last passed through this interface
+	nm.prevIntrfcID = intrfc.Number
+
 	intrfc.LogNetEvent(evtMgr.CurrentTime(), nm, "enter")
 	intrfc.PrmDev.LogNetEvent(evtMgr.CurrentTime(), nm, "enter")
 	AddIntrfcTrace(devTraceMgr, evtMgr.CurrentTime(), nm.ExecID, nm.MsgID, intrfc.Number,
@@ -2034,10 +2104,10 @@ func arriveIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) 
 	netDevType := intrfc.Device.DevType()
 
 	// cast data argument to network message
+	intrfc.addTrace("arriveIngressIntrfc", nm, currentTime)
 
-	nowInSecs := evtMgr.CurrentSeconds()
-
-	intrfc.addTrace("arriveIngressIntrfc", nm, nowInSecs)
+	// if there is a message waiting for transmission, bring it
+	schedNxtMsgToIntrfc(evtMgr, intrfcQ)
 
 	// if this device is an endpoint, the message gets passed up to it
 	device := intrfc.Device
@@ -2063,11 +2133,26 @@ func arriveIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) 
 	// advance position along route
 	nmbody.StepIdx += 1
 	nxtIntrfc := IntrfcByID[(*nmbody.Route)[nmbody.StepIdx].srcIntrfcID]
+
+	// get the delay through the device
 	delay := device.DevDelay(nmbody.MsgLen)
 
-	evtMgr.Schedule(nxtIntrfc, nmbody, enterEgressIntrfc, vrtime.SecondsToTime(delay))
+	// get rid of cruft bits
+	delay = roundFloat(delay, rdigits)
+
+	intrfc.State.NxtDelayByIntrfc[nxtIntrfc.Number] = delay
+
+	// statement below is just for debugging
+	// alignment := alignServiceTime(nxtIntrfc, roundFloat(currentTime+delay, rdigits), nmbody.MsgLen)
+	priority := int64(intrfc.Device.DevRng().RandInt(1, 1000000))
+	evtMgr.Schedule(nxtIntrfc, nmbody, enterEgressIntrfc, vrtime.SecondsToTimePri(delay, priority))
 	return nil
 }
+
+var SumWaits float64
+var NumWaits int
+var ClientStrm int
+var StrmSamples int
 
 // schedule the passage of the first message in the intrfcQStruct's queue
 // through the interface, as a function of the message length and the interface bandwidth
@@ -2077,22 +2162,39 @@ func enterIntrfcService(evtMgr *evtm.EventManager, context any, data any) any {
 	intrfc := iqs.intrfc
 	msgID := data.(int)
 
+	if iqs.ingress {
+		iqs.intrfc.State.IngressTransit = true
+		iqs.intrfc.State.IngressTransitMsgID = msgID
+	} else {
+		iqs.intrfc.State.EgressTransit = true
+		iqs.intrfc.State.EgressTransitMsgID = msgID
+	}
+
+	// pop the message off the queue
+	var nm *NetworkMsg
+	if ingress {
+		nm = intrfc.State.IngressIntrfcQ.popNetworkMsg()
+	} else {
+		nm = intrfc.State.EgressIntrfcQ.popNetworkMsg()
+	}
+
 	// compute the delay through the interface at its bandwidth speed
-	nm := iqs.msgQueue[0].nm
+	// nm = iqs.msgQueue[0].nm
 	if nm.MsgID != msgID {
 		panic(fmt.Errorf("intrfcQ msgQueue ordering problem"))
 	}
 
-	msgLenMbits := float64(nm.MsgLen) / 1e6
+	msgLenMbits := float64(8*nm.MsgLen) / 1e6
 	latency := roundFloat(msgLenMbits/intrfc.State.Bndwdth, rdigits)
-	iqs.strmQ.stopServing()
 
 	// schedule the message delivery on the 'other side' of the interface.
 	// The event handler to schedule depends on whether the passage is egress or ingress
 	if ingress {
-		evtMgr.Schedule(intrfc, *nm, arriveIngressIntrfc, vrtime.SecondsToTime(latency))
+		priority := int64(intrfc.Device.DevRng().RandInt(1, 1000000))
+		evtMgr.Schedule(intrfc, nm, arriveIngressIntrfc, vrtime.SecondsToTimePri(latency, priority))
 	} else {
-		evtMgr.Schedule(intrfc, nil, exitEgressIntrfc, vrtime.SecondsToTime(latency))
+		priority := int64(intrfc.Device.DevRng().RandInt(1, 1000000))
+		evtMgr.Schedule(intrfc, nm, exitEgressIntrfc, vrtime.SecondsToTimePri(latency, priority))
 	}
 
 	return nil
@@ -2180,7 +2282,7 @@ func passThruDevice(model, op string, msgLen int) float64 {
 	if !here || len(tbl) == 0 {
 		panic(fmt.Errorf("dev op timing requested for unknown model %s executing op %s", model, op))
 	}
-	x := devOpTimeFromTbl(false, tbl, op, model, msgLen)
+	x := devOpTimeFromTbl(tbl, op, model, msgLen)
 
 	// b1, b2 = Bndwdth
 	// x = ExecTime
@@ -2206,12 +2308,12 @@ func passThruDevice(model, op string, msgLen int) float64 {
 	p := float64(msgLen)
 
 	// remember that units here are microseconds, and the simulator is working at seconds
-	return (x - 2*p*d)
+	return math.Max((x - 2*p*d), 0.0)
 }
 
 var devExecTimeCache = make(map[string]map[string]map[int]float64)
 
-func devOpTimeFromTbl(isFunc bool, tbl []opTimeDesc, op, model string, msgLen int) float64 {
+func devOpTimeFromTbl(tbl []opTimeDesc, op, model string, msgLen int) float64 {
 	// get the parameters needed for the func execution time lookup
 	if isNOP(op) {
 		return 0.0

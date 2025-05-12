@@ -1,6 +1,6 @@
 ### Multi-Resolution Network Emulator/Simulator (mrnes)
 
-(Last update March 26, 2025)
+(Last update May 10, 2025)
 
 #### 1. Overview
 
@@ -44,7 +44,7 @@ Consider the figure below, illustrating the presentation of a message to an **mr
 
 A unique feature of **mrnes** is its support for concurrent simulation of network components at different levels of resolution.   The point of the design is to enable a modeler to include the impact that computation and communication *other* than that of particular interest has on the workflows of interest, by including their use of network and computational resources, against which the foreground activity competes.
 
-Foreground computation requests are presented to an **mrnes** endpoint, which queues them if needed to be served by a free CPU core.   **mrnes** allows a model to specify a background rate and per-request computation demand at an endpoint, and have that flow occupy cores under the covers so to speak.  In the presence of background computation the requests for foreground computation are more likely to have to wait for a free core.
+Foreground computation requests are presented to an **mrnes** endpoint, which queues them if needed to be served by a free CPU core.   **mrnes** allows a model to specify a background rate and per-request computation demand at an endpoint, and have that flow occupy cores, under the covers so to speak.  In the presence of background computation the requests for foreground computation are more likely to have to wait for a free core.
 
 Background flows can be introduced to cause foreground frames to have to compete for bandwidth, and so slow down communication.   **mrnes** defines an API for describing attributes of these background flows.  In all cases the effect of background flows at an interface is to induce foreground frames to  queue for transmission through the interface, using a delay model based on the aggregate background flows through it.  The level of intensity of background computation and background flows can be dynamically changed in the course of a simulation run, by the model code that uses the **mrnes** package.
 
@@ -397,7 +397,6 @@ type FlowFrame struct {
     DstDev string
     ReqRate float64
     Mode string
-    FlowModel string
     FrameSize int
 }
 ```
@@ -406,7 +405,7 @@ This is exactly the `FlowDesc` structure seen before.
 
 Methods associated with a `FlowFrame` are
 
-- `func CreateFlowFrame(name,srcDev, dstDev, mode, flowmodel string, reqRate float64, frameSize int ) *FlowFrame ` returns a pointer to a `FlowFrame` structure that holds a flow's description. `Name` is any string that uniquely identifies the flow across the entire model.  `Groups` is a list of tags, as with other network devices. `SrcDev` and `DstDev` are the Name attributes of the endpoints that initiate and receive the flow.  `ReqRate` is the bandwidth---expressed in units of Mbit/sec---requested for the flow. `Mode` is one of 'pckt', 'elastic-flow', 'inelastic-flow', each of which describes the nature of the flow.   'pckt' means the flow is represented as a stream of individual packets.   'inelastic-flow' means that if the request to establish the flow is requested, the flow is assured to be delivered at the rate provided as 'ReqRate'. 'elastic-flow' means that the flow may be established at a rate that is smaller than that expressed in 'ReqRate', depending on bandwidth availability.  In the case that `Mode` is 'pckt',  'ReqRate' gives the aggregate rate that packet bits are inserted into the network.   The per-packet inter-arrival time is chosen to yield this aggregate rate.  'FlowModel' gives a description of the inter-arrival time distribution when 'Mode' is 'pckt'.  At present there are two models.  'FlowModel' set to 'expon' makes the flow process a Poisson process, with exponentially distributed packet inter-arrival times. 'FlowModel' set to 'const' sets the packet inter-arrival time to be constant, the inverse of the packet arrival rate.  Finally, `FrameSize` is the number of bytes assumed to be in the packets, either when `Mode` is 'pckt' or when the impact of the represented 'virtual' packets are considered at interfaces at devices along the flow's route.
+- `func CreateFlowFrame(name,srcDev, dstDev, mode string, reqRate float64, frameSize int ) *FlowFrame ` returns a pointer to a `FlowFrame` structure that holds a flow's description. `Name` is any string that uniquely identifies the flow across the entire model.  `Groups` is a list of tags, as with other network devices. `SrcDev` and `DstDev` are the Name attributes of the endpoints that initiate and receive the flow.  `ReqRate` is the bandwidth---expressed in units of Mbit/sec---requested for the flow. `Mode` is one of 'pckt', 'elastic-flow', 'inelastic-flow', each of which describes the nature of the flow.   'pckt' means the flow is represented as a stream of individual packets.   'inelastic-flow' means that if the request to establish the flow is requested, the flow is assured to be delivered at the rate provided as 'ReqRate'. 'elastic-flow' means that the flow may be established at a rate that is smaller than that expressed in 'ReqRate', depending on bandwidth availability.  In the case that `Mode` is 'pckt',  'ReqRate' gives the aggregate rate that packet bits are inserted into the network.   The per-packet inter-arrival time is chosen to yield this aggregate rate.  Finally, `FrameSize` is the number of bytes assumed to be in the packets, either when `Mode` is 'pckt' or when the impact of the represented 'virtual' packets are considered at interfaces at devices along the flow's route.
 
 - The single methods associated with a `FlowFrame` of significance is 
 
@@ -472,7 +471,7 @@ What interpretation then should one give to `ParamObj`, `AttribStruct`, `Param`,
 | Endpt       | model, bckgrndRate, bckgrndSrv, cores,  trace, interruptdelay |
 | Switch      | model, buffer, drop, trace                                   |
 | Router      | model, buffer, drop,  trace                                  |
-| Flow        | reqrate, mode, flowmodel                                     |
+| Flow        | reqrate, mode                                                |
 
 For a Network, the 'latency' parameter is the default latency for a message when transitioning between interfaces that face the given network.  A value assigned is in units of seconds. 'bandwidth' quantifies modeled point to point bandwidth across the network between two specfied interfaces, while 'capacity' describes the maximum volume of traffic the network can carry.   The units of both parameters is Mbps. The Boolean 'drop' parameter when set allows the executing model to drop packets when model state is consistent with a drop; the default of 'drop' is false.  'trace' is a flag set when detailed trace information is desired for traffic crossing the network.  
 
@@ -736,7 +735,7 @@ The **mrnes** function that creates a background flow is
 
 ```
 func func CreateFlow(srcDev string, dstDev string, requestRate float64, frameSize int, 
-		mode, flowmodel string, execID int, groups []string)
+		mode string, execID int, groups []string)
 ```
 
 The function arguments are
@@ -745,7 +744,6 @@ The function arguments are
 - requestRate:  the requested bitrate (in Mbps) of the flow
 - frameSize: the number of bytes in flow packet's frame, meaningful when mode is 'pckt'
 - mode:  one of 'pckt', 'inelastic-flow', 'elastic-flow'
-- flowmodel: one of 'expon', 'const', meaningful when mode is 'pckt', indicating the inter-packet arrival distribution
 - execID: an identitity
 - groups: a list of tags useable by model code to differentiate between flows.
 
@@ -793,6 +791,20 @@ Packets are presented to **mrnes** for communication using method **mrnes.EnterN
 Method **mrnes.enterIntrfcService** is scheduled to execute at the time such queuing---if any---has completed.   This event handler computes the delay the message has passing through the interface as a function of the message length, and interface speed, and schedules method **mrnes.exitEgressIntrfc** to execute on completion of the transfer.   This latter event computes a message latency to the next interface on the message's route.  There are two ways for this computation is performed.   If it happens that the topology model declares that there is a cable between those two interfaces, there is then a 'time-on-wire' delay associated with traversing that cable which serves as the latency.   If there is no cable, the computation estimates the latency as being the mean 'time in system' of an M/D/1 queue, where the 'arrival rate' is the sum of the rates of all Flows departing the egress interface with the rates of all Flows entering the next interface on the route; the deterministic delay is the time required to serve the message as a function of its length and the declared bandwidth of the network being traversed. Event handler **mrnes.enterIngressIntrfc**  is scheduled to execute at the end of the trans-network latency period.   If it happens that there is another message enqueued at the original interface, **mrnes.enterIntrfcService** is scheduled to execute.  This scheduling may include a delay that models servicing imaginary flow packets at the interface that arrived between when the message now leaving the original interface started being served, and the present time.
 
 Execution of event handler **mrnes.enterIngressIntrfc** is similar to that of **mrnes.enterEgressIntrfc**. The message is enqueued at the interface, and execution of **mrnes.enterIntrfcService** is scheduled if the message arrives to an empty queue.   After service is given to the message, the event handler **mrnes.arriveIngressIntrfc** is scheduled to execute.  Here, if the interface is attached to an **mrnes** Endpoint, the message is passed back up to the application layer using **mrnes** by calling the network portal method **Depart**, described earlier.  Otherwise the event handler **mrnes.enterEgressIntrfc** is scheduled to execute immediately.
+
+##### 5.3 Model of Flow processing
+
+When a Flow's mode is 'packet' the simulator sets up a stream of messages to run continuously, each of which looks like a message sent by an application and is handled as though it were a message from an application.   The endpoint named as the Flow's srcDev originates the messages, and each is directed to the endpoint named as the flow dstDev.  Packets in the Flow compete for bandwidth at interfaces with packets generated by applications, and so introduce additional queueing delays for the application packets that otherwise would not have been present.  The rate established for the Flow has units of Mbits/sec.   The route established for the srcDev -> dstDev flow starts at one of srcDev's network interfaces, and the Flow's packets are issued from that interface.    The inter-arrival time between packets is random, G*S, where S is the time required for one packet of FrameSize bytes to pass through the interface, and G is a geometically distributed random variable with success probability p equal to the ratio of the Flow's rate to the interface's bandwidth.  Packets that are generated this way are tagged, and upon reaching the endpoint named by dstDev are dropped. 
+
+When a Flow's mode is either 'elastic-flow' or 'inelastic-flow' there are no concrete packets generated.   The timing model is built to represent a Flow's packet arrivals and their consumption of bandwidth at interfaces.  As a Flow is defined and its end-to-end bit rate is established, every interface on the route from the Flow's srcDev to dstDev is tagged with the Flow's identity and its bitrate.  As illustrated by the Figure below in (a), the egress side of a device interface can identity a 'FlowSet' of all flows that arrive at the the device through a common ingress interface, and are directed to the egress interface. Figure side (b) illustrates that we
+
+<img src="/Users/nicol/Dropbox/github-repos/mrnes/docs/images/mrnes-flowsets-through-device.png" alt="mrnes-flows-through-device" style="zoom:50%;" />
+
+
+
+aggregate all Flows through a device that share the ingress and egress interfaces as a 'FlowSet'.  Foreground packets that arrive to the device through the same ingress interface would be serialized,  the interface admits only one at a time.   In this then the egress interface sees no difference (statistically) between a Flow whose bit rate is the sum of the Flows in a FlowSet and individual treatment of those Flows.   Our flow model discretizes the potential arrival times of imagined packets in a FlowSet to occur at epochs of the service time that would be required by the egress interface to push a packet FrameSize bytes large through the interface, call that S.  The timing model is then like having packet movement clocked at discrete points in time, S units of time apart.   In this model, every FlowSet may present one or zero packets to the egress interface each time-step.   We denote the total number of packets so presented at the $n^{th}$ step by the variable $A_n$.    We assume the inter-arrival times of packets from flows in the same FlowSet are like those when the Flow mode is 'packet': random, G*S where G is geometrically distributed with success probability equal to the ratio of the sum of the FlowSet's Flow's bitrates to the egress interface bandwidth.  This makes $A_n$ random as well.   One can compute the number of imagined flow packets in the system after completing the $n^{th}$ time-step by $Q_n = \max\{0, Q_{n-1}+A_n -1\}$.  
+
+The device passes foreground packets through itself, and foreground packets may queue up for transmission through an interface.  We apply the model of imagined background flow packets at the instant we have a foreground packet P that is ready for transmission according to the queueing rules of foreground traffic,  but might receive an additional delay waiting for the transmission of as-yet-untransmitted imaginary flow packets that arrived at the interface before the foreground traffic.   Importantly, this means that the $A_n$ random variables are sampled on demand, within the context of a simulating a device placing a foreground packet into service, and does not involve or depending any sampling associated with those same Flows passing through previous devices.  The parameters of the sampling depend on the Flows' accepted bitrates only, and the device's egress interface bandwidth.  We compute this additional flow-induced delay by sampling all the $A_i$ since the time that the last foreground packet was served up until the point P is ready to be transmitted, and using the recursion on $Q_n$ compute the number of flow packets still enqueued at the interface at the instant that P is ready for transmission.  If that number is non-zero the transmission of P is delayed for at least as many time-steps as there are flow packets enqueued.   If there are arrivals from FlowSets to the egress at that same instant, under the assumption among currently arriving packets the order of processing is uniformly randomized, it may be that P is delay (perhaps even further) because one or more of the imagined flow packets is served before it.   In any case, the flow model gives us a rational means of quantifying how background flows can consume resources and induce queuing delay into the forwarding of foreground traffic.
 
 ### Appendix: Identity Sets
 

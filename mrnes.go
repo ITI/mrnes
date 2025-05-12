@@ -274,23 +274,13 @@ func reorderExpParams(pL []ExpParameter) []ExpParameter {
 	sort.Slice(sg, func(i, j int) bool {
 		compared := CompareAttrbs(sg[i].Attributes, sg[j].Attributes)
 		switch compared {
-			case -1 :
-				return true
-			case 1:
-				return false
-			default:
-				return false
-		}
-
-		if sg[i].Param < sg[j].Param {
+		case -1:
 			return true
-		}
-
-		if sg[i].Param > sg[j].Param {
+		case 1:
+			return false
+		default:
 			return false
 		}
-
-		return sg[i].Value < sg[j].Value
 	})
 
 	// sort the named elements by the (Attribute, Param) key
@@ -351,7 +341,7 @@ func SetTopoParameters(expCfg *ExpCfg) {
 	// specified assignments
 	defaultParamList := make([]ExpParameter, 0)
 
-	// set defaults to ensure that every parameter that has to have a value does 
+	// set defaults to ensure that every parameter that has to have a value does
 	for _, paramObj := range ExpParamObjs {
 		for _, param := range ExpParams[paramObj] {
 			vs := ""
@@ -391,7 +381,6 @@ func SetTopoParameters(expCfg *ExpCfg) {
 	swtchParams := []ExpParameter{}
 	intrfcParams := []ExpParameter{}
 	flowParams := []ExpParameter{}
-
 
 	for _, param := range expCfg.Parameters {
 		switch param.ParamObj {
@@ -960,7 +949,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 }
 
 func createBgfStruct(fd *FlowDesc) *Flow {
-	bfg := CreateFlow(fd.SrcDev, fd.DstDev, fd.ReqRate, fd.FrameSize, fd.Mode, fd.FlowModel, 0, fd.Groups)
+	bfg := CreateFlow(fd.Name, fd.SrcDev, fd.DstDev, fd.ReqRate, fd.FrameSize, fd.Mode, 0, fd.Groups)
 	return bfg
 }
 

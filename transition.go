@@ -120,7 +120,7 @@ type NetMsgIDs struct {
 // | Discrete Packet | DiscreteConn  | N/A           | Zero, Place, Simulate | >0 => embedded          |
 // | Flow            | FlowConn      | Srt, Chg, End | Zero, Place, Simulate | flowID>0                |
 func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev string, msgLen int,
-	connDesc *ConnDesc, IDs NetMsgIDs, rtns RtnDescs, requestRate float64, msrID int, msg any) (int, float64, bool) {
+	connDesc *ConnDesc, IDs NetMsgIDs, rtns RtnDescs, requestRate float64, msrID int, strmPckt bool, strmPcktID int, msg any) (int, float64, bool) {
 
 	// pull out the IDs for clarity
 	flowID := IDs.FlowID
@@ -213,11 +213,18 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 	for fmNumber := 0; fmNumber < numFrames; fmNumber++ {
 		nm := new(NetworkMsg)
 		nm.MsrID = msrID
-		nm.MsgID = NetworkMsgID
-		NetworkMsgID += 1
+
+		if strmPckt {
+			nm.MsgID = strmPcktID
+		} else {
+			nm.MsgID = NetworkMsgID
+			NetworkMsgID += 1
+		}
+
 		nm.StepIdx = 0
 		nm.Route = route
 		nm.Rate = 0.0
+		nm.Syncd = make([]int, 0)
 		nm.PcktRate = math.MaxFloat64 / 4.0
 		nm.PrArrvl = 1.0
 		nm.StartTime = evtMgr.CurrentSeconds()
@@ -228,6 +235,7 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		nm.Connection = *connDesc
 		nm.PcktIdx = fmNumber
 		nm.NumPckts = numFrames
+		nm.StrmPckt = strmPckt
 		nm.Msg = msg
 
 		// schedule the message's next destination
@@ -448,12 +456,12 @@ func (np *NetworkPortal) RmFlow(evtMgr *evtm.EventManager, rmflowID int,
 
 			// remove the flow from the device's forward maps
 			switch egressIntrfc.DevType {
-				case RouterCode :
-					rtr := dev.(*routerDev)
-					rtr.rmForward(rmflowID)
-				case SwitchCode :
-					swtch := dev.(*switchDev)
-					swtch.rmForward(rmflowID)
+			case RouterCode:
+				rtr := dev.(*routerDev)
+				rtr.rmForward(rmflowID)
+			case SwitchCode:
+				swtch := dev.(*switchDev)
+				swtch.rmForward(rmflowID)
 			}
 		}
 	}
@@ -707,10 +715,17 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 	changes := make(map[int]float64)
 
 	// visit each step on the route
+	var prevDstIntrfcID int
+	var dstIntrfcID int
+	var prevSrcIntrfcID int
+
 	for idx := 0; idx < len((*route)); idx++ {
 
 		// remember the step particulars
 		rtStep := (*route)[idx]
+
+		prevDstIntrfcID = dstIntrfcID
+		dstIntrfcID = rtStep.dstIntrfcID
 
 		// ifcpr may be needed to index into a map later
 		ifcpr := intrfcIDPair{prevID: rtStep.srcIntrfcID, nextID: rtStep.dstIntrfcID}
@@ -718,6 +733,11 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 		// flag indicating whether we need to analyze the ingress side of the route step.
 		// The egress side is always analyzed
 		doIngressSide := (idx > 0)
+
+		if idx == 0 {
+			outIntrfc := IntrfcByID[rtStep.srcIntrfcID]
+			outIntrfc.ChgFlowRate(0, flowID, acceptRate, false)
+		}
 
 		// ingress side first, then egress side
 		for sideIdx := 0; sideIdx < 2; sideIdx++ {
@@ -737,6 +757,7 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 				// so our ingress interface ID is the destination interface ID
 				// of the previous routing step
 				intrfc = IntrfcByID[(*route)[idx-1].dstIntrfcID]
+				prevSrcIntrfcID = (*route)[idx-1].srcIntrfcID
 				intrfcMap = intrfc.State.ToIngress
 			} else {
 				intrfc = IntrfcByID[(*route)[idx].srcIntrfcID]
@@ -759,7 +780,13 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 			// if the interface wasn't compressing elastic flows before
 			// or after the change, its peers aren't needing attention due to this interface
 			wasCongested := intrfc.IsCongested(ingressSide)
-			intrfc.ChgFlowRate(flowID, acceptRate, ingressSide)
+
+			if ingressSide {
+				intrfc.ChgFlowRate(prevSrcIntrfcID, flowID, acceptRate, ingressSide)
+			} else {
+				intrfc.ChgFlowRate(prevDstIntrfcID, flowID, acceptRate, ingressSide)
+			}
+
 			isCongested := intrfc.IsCongested(ingressSide)
 
 			if wasCongested || isCongested {
@@ -805,9 +832,10 @@ func (np *NetworkPortal) SetFlowRate(evtMgr *evtm.EventManager, flowID int, acce
 				net := intrfc.Faces
 
 				dstIntrfc := IntrfcByID[rtStep.dstIntrfcID]
+				net.ChgFlowRate(flowID, ifcpr, acceptRate)
 
 				wasCongested := net.IsCongested(intrfc, dstIntrfc)
-				net.ChgFlowRate(flowID, ifcpr, acceptRate)
+
 				isCongested := net.IsCongested(intrfc, dstIntrfc)
 
 				if wasCongested || isCongested {
@@ -882,8 +910,11 @@ func (np *NetworkPortal) SendNetMsg(evtMgr *evtm.EventManager, nm *NetworkMsg, o
 		// get the interface at the first step
 		intrfc := IntrfcByID[(*route)[0].srcIntrfcID]
 
+		// add alignment only for debugging
+		alignment := alignServiceTime(intrfc, roundFloat(evtMgr.CurrentSeconds()+offset, rdigits), nm.MsgLen)
+
 		// schedule exit from first interface after msg passes through
-		evtMgr.Schedule(intrfc, *nm, enterEgressIntrfc, vrtime.SecondsToTime(offset))
+		evtMgr.Schedule(intrfc, *nm, enterEgressIntrfc, vrtime.SecondsToTime(offset+alignment))
 	}
 }
 
@@ -891,9 +922,10 @@ func (np *NetworkPortal) SendNetMsg(evtMgr *evtm.EventManager, nm *NetworkMsg, o
 func (np *NetworkPortal) SendImmediate(evtMgr *evtm.EventManager, nm *NetworkMsg) {
 
 	// schedule exit from final interface after msg passes through
-	ingressIntrfcID := (*nm.Route)[len(*nm.Route)-1].dstIntrfcID
-	ingressIntrfc := IntrfcByID[ingressIntrfcID]
-	evtMgr.Schedule(ingressIntrfc, *nm, enterIngressIntrfc, vrtime.SecondsToTime(0.0))
+	intrfc := IntrfcByID[(*nm.Route)[len(*nm.Route)-1].dstIntrfcID]
+	device := intrfc.Device
+	nmbody := *nm
+	ActivePortal.Depart(evtMgr, device.DevName(), nmbody)
 }
 
 // PlaceNetMsg schedules the receipt of the message some deterministic time in the future,
