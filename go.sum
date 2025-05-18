@@ -1,5 +1,7 @@
 github.com/iti/evt v0.1.5 h1:Rfg4d2MsDTQasNHwIZFRJ/b3Msb9TehXoeol2w0vwg4=
 github.com/iti/evt v0.1.5/go.mod h1:Za5EWHBUFPbqi0k6HsKCS+RpLHgkLTSLFYEcS3QHuPw=
+github.com/iti/evt v0.1.6 h1:bRwzqb6xhtesaOwaw8psJyoLx12NiBnMjSqfSMHGzjc=
+github.com/iti/evt v0.1.6/go.mod h1:Za5EWHBUFPbqi0k6HsKCS+RpLHgkLTSLFYEcS3QHuPw=
 github.com/iti/rngstream v0.2.2 h1:9cfSikwWPW1Yie+RjdJ23uUuMryLu+Ou38/TChYLPZ8=
 github.com/iti/rngstream v0.2.2/go.mod h1:sf9vdWtEjVW4dxOocgIqbivkNIrfcl10H8jEeeqFNnQ=
 golang.org/x/exp v0.0.0-20250506013437-ce4c2cf36ca6 h1:y5zboxd6LQAqYIhHnB48p0ByQ/GnQx2BE33L8BOHQkI=

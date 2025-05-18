@@ -1,8 +1,6 @@
-# mrnes
+### Introduction to **mrnes**
 
-Multi-resolution network emulation-simulation
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+(Last update May 17, 2025)
 
 #### Overview
 
@@ -40,6 +38,8 @@ Consider the figure below, illustrating the presentation of a message to an **mr
 
 ![mrnes-network](./images/network-with-comm.png)
 
+
+
 ##### Background flows and background computation
 
 A unique feature of **mrnes** is its support for concurrent simulation of network components at different levels of resolution.   The point of the design is to enable a modeler to include the impact that computation and communication *other* than that of particular interest has on the workflows of interest, by including their use of network and computational resources, against which the foreground activity competes.
@@ -55,7 +55,4 @@ The API for **mrnes** input files is given in [**mrnes**-API](#https://github.co
 ##### **mrnes** Internals
 
 More detailed documentation of how **mrnes** operates is provided in [**pces**-Internals.pdf](#https://github.com/ITI/pces/blob/main/docs/PCES-Internals.pdf)
-
-Copyright 2024 Board of Trustees of the University of Illinois.
-See [the license](LICENSE) for details.
 
