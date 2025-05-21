@@ -1698,6 +1698,9 @@ func (swtch *switchDev) DevDelay(msg *NetworkMsg) float64 {
 	defaultOp, present := swtch.SwitchState.DefaultOp[msgSrcName]
 	if present {
 		opFunc := swtch.SwitchState.DevExecOpTbl[defaultOp]
+		if opFunc == nil {
+			panic(fmt.Errorf("in switch {} dev op {} lacking user-provided instantiation", swtch.SwitchName, defaultOp))
+		}
 		return opFunc(swtch, "", msg)
 	}
 	// no user-defined default listed, so use system default
@@ -1914,6 +1917,9 @@ func (router *routerDev) DevDelay(msg *NetworkMsg) float64 {
 	defaultOp, present := router.RouterState.DefaultOp[msgSrcName]
 	if present {
 		opFunc := router.RouterState.DevExecOpTbl[defaultOp]
+		if opFunc == nil {
+			panic(fmt.Errorf("in router {} dev op {} lacking user-provided instantiation", router.RouterName, defaultOp))
+		}
 		return opFunc(router, "", msg)
 	}
 	// no user-defined default listed, so use system default
