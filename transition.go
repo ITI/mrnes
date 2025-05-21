@@ -238,6 +238,8 @@ func (np *NetworkPortal) EnterNetwork(evtMgr *evtm.EventManager, srcDev, dstDev 
 		nm.StrmPckt = strmPckt
 		nm.Msg = msg
 
+		nm.MetaData = make(map[string]any)
+
 		// schedule the message's next destination
 		np.SendNetMsg(evtMgr, nm, delay)
 
