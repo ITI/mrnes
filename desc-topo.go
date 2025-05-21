@@ -858,6 +858,8 @@ type RouterDesc struct {
 	// Model is an attribute like "Cisco 6400". Used primarily in run-time configuration
 	Model string `json:"model" yaml:"model"`
 
+	OpDict	   map[string]string `json:"opdict" yaml:"opdict"`
+
 	// list of names interfaces that describe the ports of the router
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
@@ -867,6 +869,7 @@ type RouterFrame struct {
 	Name       string // identical to RouterDesc attribute
 	Groups     []string
 	Model      string         // identifical to RouterDesc attribute
+	OpDict	   map[string]string 
 	Interfaces []*IntrfcFrame // list of interface frames that describe the ports of the router
 }
 
@@ -966,6 +969,7 @@ func (rf *RouterFrame) Transform() RouterDesc {
 	rd.Name = rf.Name
 	rd.Model = rf.Model
 	rd.Groups = rf.Groups
+	rd.OpDict = rf.OpDict
 
 	// create serializable representation of the interfaces by calling the Transform method on their Frame representation
 	rd.Interfaces = make([]IntrfcDesc, len(rf.Interfaces))
@@ -1082,6 +1086,7 @@ type SwitchDesc struct {
 	Name       string       `json:"name" yaml:"name"`
 	Groups     []string     `json:"groups" yaml:"groups"`
 	Model      string       `json:"model" yaml:"model"`
+	OpDict	   map[string]string `json:"opdict" yaml:"opdict"`
 	Interfaces []IntrfcDesc `json:"interfaces" yaml:"interfaces"`
 }
 
@@ -1090,6 +1095,7 @@ type SwitchFrame struct {
 	Name       string // unique string identifier used to reference the router
 	Groups     []string
 	Model      string         // device model identifier
+	OpDict	   map[string]string `json:"opdict" yaml:"opdict"`
 	Interfaces []*IntrfcFrame // interface frames that describe the ports of the router
 }
 
@@ -1206,6 +1212,7 @@ func (sf *SwitchFrame) Transform() SwitchDesc {
 	sd.Name = sf.Name
 	sd.Model = sf.Model
 	sd.Groups = sf.Groups
+	sd.OpDict = sf.OpDict
 
 	// serialize the interfaces by calling their own serialization routines
 	sd.Interfaces = make([]IntrfcDesc, len(sf.Interfaces))

@@ -586,7 +586,7 @@ type TopoDev interface {
 	DevType() DevCode             // every device is one of the devCode types
 	DevModel() string             // model (or CPU) of device
 	DevIntrfcs() []*intrfcStruct  // we can get from devices a list of the interfaces they endpt, if any
-	DevDelay(int) float64         // every device can be be queried for the delay it introduces for an operation
+	DevDelay(*NetworkMsg) float64 // every device can be be queried for the delay it introduces for an operation
 	DevState() any                // every device as a structure of state that can be accessed
 	DevRng() *rngstream.RngStream // every device has its own RNG stream
 	DevAddActive(*NetworkMsg)     // add the connectID argument to the device's list of active connections
@@ -643,8 +643,6 @@ type intrfcState struct {
 	ToEgress    map[int]float64 // sum of flow rates into egress side of device
 	ThruEgress  map[int]float64 // sum of flow rates out of egress side device
 
-	NxtDelayByIntrfc map[int]float64
-
 	IngressLambda   float64 // sum of rates of flows approach interface from ingress side.
 	EgressLambda    float64
 	FlowModel       string
@@ -664,9 +662,6 @@ func createIntrfcState(intrfc *intrfcStruct) *intrfcState {
 	iss.ThruIngress = make(map[int]float64)
 	iss.ToEgress = make(map[int]float64)
 	iss.ThruEgress = make(map[int]float64)
-
-	iss.NxtDelayByIntrfc = make(map[int]float64)
-
 	iss.EgressLambda = 0.0
 	iss.IngressLambda = 0.0
 	iss.FlowModel = "expon"
@@ -1499,7 +1494,7 @@ func (endpt *endptDev) DevRmActive(connectID int) {
 
 // DevDelay returns the state-dependent delay for passage through the device, as part of the TopoDev interface.
 // Not really applicable to endpt, so zero is returned
-func (endpt *endptDev) DevDelay(msgLen int) float64 {
+func (endpt *endptDev) DevDelay(msg *NetworkMsg) float64 {
 	return 0.0
 }
 
@@ -1524,6 +1519,8 @@ type switchState struct {
 	Capacity   float64
 	Forward    DFS
 	Packets    int
+	DefaultOp  map[string]string
+	DevExecOpTbl map[string]OpMethod
 }
 
 // createSwitchDev is a constructor, initializing a run-time representation of a switch from its desc description
@@ -1534,20 +1531,29 @@ func createSwitchDev(switchDesc *SwitchDesc) *switchDev {
 	swtch.SwitchID = nxtID()
 	swtch.SwitchIntrfcs = make([]*intrfcStruct, 0)
 	swtch.SwitchGroups = switchDesc.Groups
-	swtch.SwitchState = createSwitchState(swtch.SwitchName)
+	swtch.SwitchState = createSwitchState(switchDesc)
 	return swtch
 }
 
 // createSwitchState constructs data structures for the switch's state
-func createSwitchState(name string) *switchState {
+func createSwitchState(switchDesc *SwitchDesc) *switchState {
 	ss := new(switchState)
 	ss.Active = make(map[int]float64)
 	ss.Load = 0.0
 	ss.Packets = 0
 	ss.Trace = false
 	ss.Drop = false
-	ss.Rngstrm = rngstream.New(name)
+	ss.Rngstrm = rngstream.New(switchDesc.Name)
 	ss.Forward = make(map[int]intrfcIDPair)
+	ss.DevExecOpTbl = make(map[string]OpMethod)
+	ss.DefaultOp = make(map[string]string)
+	for src := range switchDesc.OpDict {
+		op := switchDesc.OpDict[src]
+		ss.DefaultOp[src] = op
+
+		// use this initialization to test against in DevDelay
+		ss.DevExecOpTbl[op] = nil
+	}
 	return ss
 }
 
@@ -1565,6 +1571,15 @@ func (swtch *switchDev) addForward(flowID int, idp intrfcIDPair) {
 func (swtch *switchDev) rmForward(flowID int) {
 	delete(swtch.SwitchState.Forward, flowID)
 }
+
+func (swtch *switchDev) AddDevExecOp(op string, opFunc OpMethod) {
+	swtch.SwitchState.DevExecOpTbl[op] = opFunc
+}
+
+func (swtch *switchDev) SetDefaultOp(src, op string) {
+	swtch.SwitchState.DefaultOp[src] = op
+}
+
 
 // matchParam is used to determine whether a run-time parameter description
 // should be applied to the switch. Its definition here helps switchDev satisfy
@@ -1656,8 +1671,37 @@ func (swtch *switchDev) DevRmActive(connectID int) {
 }
 
 // devDelay returns the state-dependent delay for passage through the switch, as part of the TopoDev interface.
-func (swtch *switchDev) DevDelay(msgLen int) float64 {
-	return passThruDevice(swtch.SwitchModel, "switch", msgLen)
+func (swtch *switchDev) DevDelay(msg *NetworkMsg) float64 {
+	// if the switch doesn't do anything non-default just do the default switch
+	if len(swtch.SwitchState.DevExecOpTbl) == 0 {
+		return delayThruDevice(swtch.SwitchModel, defaultSwitchOp, msg.MsgLen)
+	}
+
+	// look for a match in the keys of the message metadata dictionary and
+	// keys in the switch DevExecOpTbl.  On a match, call the function in the table
+	// and pass to it the meta data
+	for metaKey := range msg.MetaData {
+		opFunc, present := swtch.SwitchState.DevExecOpTbl[metaKey]
+		if present {
+
+			// see if the function is actually the empty one, meaning its not there
+			if opFunc == nil {
+				panic(fmt.Errorf("in switch {} dev op {} lacking user-provided instantiation", swtch.SwitchName, metaKey))
+			}
+			return opFunc(swtch, metaKey, msg)
+		}
+	}
+
+	// didn't find a match, so see if there is a default operation listed for traffic
+	// from the previous device
+	msgSrcName := prevDeviceName(msg)
+	defaultOp, present := swtch.SwitchState.DefaultOp[msgSrcName]
+	if present {
+		opFunc := swtch.SwitchState.DevExecOpTbl[defaultOp]
+		return opFunc(swtch, "", msg)
+	}
+	// no user-defined default listed, so use system default
+	return delayThruDevice(swtch.SwitchModel, defaultSwitchOp, msg.MsgLen)
 }
 
 // LogNetEvent satisfies TopoDev interface
@@ -1688,6 +1732,8 @@ type routerState struct {
 	Buffer  float64
 	Forward map[int]intrfcIDPair
 	Packets int
+	DefaultOp    map[string]string
+	DevExecOpTbl map[string]OpMethod
 }
 
 // createRouterDev is a constructor, initializing a run-time representation of a router from its desc representation
@@ -1698,12 +1744,12 @@ func createRouterDev(routerDesc *RouterDesc) *routerDev {
 	router.RouterID = nxtID()
 	router.RouterIntrfcs = make([]*intrfcStruct, 0)
 	router.RouterGroups = routerDesc.Groups
-	router.RouterState = createRouterState(router.RouterName)
+	router.RouterState = createRouterState(routerDesc)
 	return router
 }
 
 // createRouterState is a constructor, initializing the State dictionary for a router
-func createRouterState(name string) *routerState {
+func createRouterState(routerDesc *RouterDesc) *routerState {
 	rs := new(routerState)
 	rs.Active = make(map[int]float64)
 	rs.Load = 0.0
@@ -1711,8 +1757,15 @@ func createRouterState(name string) *routerState {
 	rs.Packets = 0
 	rs.Trace = false
 	rs.Drop = false
-	rs.Rngstrm = rngstream.New(name)
+	rs.Rngstrm = rngstream.New(routerDesc.Name)
 	rs.Forward = make(map[int]intrfcIDPair)
+	rs.DevExecOpTbl = make(map[string]OpMethod)
+	rs.DefaultOp = make(map[string]string)
+	for src := range routerDesc.OpDict {
+		op := routerDesc.OpDict[src]
+		rs.DefaultOp[src] = op
+		rs.DevExecOpTbl[op] = nil
+	}
 	return rs
 }
 
@@ -1729,6 +1782,14 @@ func (router *routerDev) addForward(flowID int, idp intrfcIDPair) {
 // rmForward removes a flowID from the router's forwarding table
 func (router *routerDev) rmForward(flowID int) {
 	delete(router.RouterState.Forward, flowID)
+}
+
+func (router *routerDev) AddDevExecOp(op string, opFunc OpMethod) {
+	router.RouterState.DevExecOpTbl[op] = opFunc
+}
+
+func (router *routerDev) SetDefaultOp(src, op string) {
+	router.RouterState.DefaultOp[src] = op
 }
 
 // matchParam is used to determine whether a run-time parameter description
@@ -1828,9 +1889,35 @@ func (router *routerDev) DevRmActive(connectID int) {
 	delete(router.RouterState.Active, connectID)
 }
 
-// DevDelay returns the state-dependent delay for passage through the router, as part of the TopoDev interface.
-func (router *routerDev) DevDelay(msgLen int) float64 {
-	return passThruDevice(router.RouterModel, "route", msgLen)
+func (router *routerDev) DevDelay(msg *NetworkMsg) float64 {
+	// if the router doesn't do anything non-default just do the default router
+	if len(router.RouterState.DevExecOpTbl) == 0 {
+		return delayThruDevice(router.RouterModel, defaultRouteOp, msg.MsgLen)
+	}
+
+	// look for a match in the keys of the message metadata dictionary and
+	// keys in the router DevExecOpTbl.  On a match, call the function in the table
+	// and pass to it the meta data
+	for metaKey := range msg.MetaData {
+		opFunc, present := router.RouterState.DevExecOpTbl[metaKey]
+		if present {
+			if opFunc == nil {
+				panic(fmt.Errorf("in router {} dev op {} lacking user-provided instantiation", router.RouterName, metaKey))
+			}
+			return opFunc(router, metaKey, msg)
+		}
+	}
+
+	// didn't find a match, so see if there is a default operation listed for traffic
+	// from the previous device
+	msgSrcName := prevDeviceName(msg)
+	defaultOp, present := router.RouterState.DefaultOp[msgSrcName]
+	if present {
+		opFunc := router.RouterState.DevExecOpTbl[defaultOp]
+		return opFunc(router, "", msg)
+	}
+	// no user-defined default listed, so use system default
+	return delayThruDevice(router.RouterModel, defaultRouteOp, msg.MsgLen)
 }
 
 // The intrfcsToDev struct describes a connection to a device.  Used in route descriptions
@@ -1865,6 +1952,7 @@ type NetworkMsg struct {
 	MsgLen         int            // length of the entire message, in bytes
 	PcktIdx        int            // index of packet with msg
 	NumPckts       int            // number of packets in the message this is part of
+	MetaData	   map[string]any // carrier of extra stuff
 	Msg            any            // message being carried.
 	intrfcArr      float64
 	StrmPckt       bool
@@ -2044,8 +2132,6 @@ func exitEgressIntrfc(evtMgr *evtm.EventManager, egressIntrfc any, data any) any
 	// strm arrival times that are synchronized with the foreground packet sends
 	evtMgr.Schedule(nxtIntrfc, *nm, enterIngressIntrfc, vrtime.SecondsToTimePri(netDelay, priority))
 
-	intrfc.State.NxtDelayByIntrfc[nxtIntrfc.Number] = netDelay
-
 	schedNxtMsgToIntrfc(evtMgr, intrfcQ)
 
 	// event-handlers are required to return _something_
@@ -2130,17 +2216,13 @@ func arriveIngressIntrfc(evtMgr *evtm.EventManager, ingressIntrfc any, msg any) 
 		nmbody.PrArrvl *= (1.0 - prDrop)
 	}
 
+	// get the delay through the device
+	delay := device.DevDelay(&nmbody)
+	delay = roundFloat(delay, rdigits)
+
 	// advance position along route
 	nmbody.StepIdx += 1
 	nxtIntrfc := IntrfcByID[(*nmbody.Route)[nmbody.StepIdx].srcIntrfcID]
-
-	// get the delay through the device
-	delay := device.DevDelay(nmbody.MsgLen)
-
-	// get rid of cruft bits
-	delay = roundFloat(delay, rdigits)
-
-	intrfc.State.NxtDelayByIntrfc[nxtIntrfc.Number] = delay
 
 	// statement below is just for debugging
 	// alignment := alignServiceTime(nxtIntrfc, roundFloat(currentTime+delay, rdigits), nmbody.MsgLen)
@@ -2272,7 +2354,7 @@ func FindFrameSize(frameID int, rt *[]intrfcsToDev) int {
 	return frameSize
 }
 
-func passThruDevice(model, op string, msgLen int) float64 {
+func delayThruDevice(model, op string, msgLen int) float64 {
 	_, present := devExecTimeTbl[op]
 	if !present {
 		panic(fmt.Errorf("dev op timing requested for unknown op %v on model %s", op, model))
@@ -2387,3 +2469,11 @@ func devOpTimeFromTbl(tbl []opTimeDesc, op, model string, msgLen int) float64 {
 func isNOP(op string) bool {
 	return (op == "noop" || op == "NOOP" || op == "NOP" || op == "no-op" || op == "nop")
 }
+
+func prevDeviceName(msg *NetworkMsg) string {
+	route := msg.Route
+	rtStep := (*route)[msg.StepIdx]
+	srcIntrfc := IntrfcByID[rtStep.srcIntrfcID]
+	return srcIntrfc.Device.DevName()
+}
+

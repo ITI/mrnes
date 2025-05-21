@@ -22,6 +22,15 @@ type opTimeDesc struct {
 }
 
 var devExecTimeTbl map[string]map[string][]opTimeDesc
+type OpMethod func(TopoDev, string, *NetworkMsg) float64
+
+// set up an empty method to test against when looking to follow the link to the OpMethod
+func emptyOpMethod(topo TopoDev, arg string, msg *NetworkMsg) float64 {
+	return 0.0
+}
+
+// first index is device name, second index is either SwitchOp or RouteOp from message
+var devExecOpTbl map[string]map[string]OpMethod
 
 // QkNetSim is set from the command line, when selected uses 'quick' form of network simulation
 var QkNetSim bool = false
@@ -41,6 +50,8 @@ var u01List []float64
 var numU01 int = 10000
 
 var defaultIntrfcBndwdth float64 = 100.0
+var defaultRouteOp = "route"
+var defaultSwitchOp = "switch"
 
 // buildDevExecTimeTbl creates a map structure that stores information about
 // operations on switches and routers.
@@ -177,6 +188,7 @@ func LoadDevExec(devExecFile string) error {
 		return err
 	}
 	devExecTimeTbl = buildDevExecTimeTbl(del)
+	devExecOpTbl = make(map[string]map[string]OpMethod)
 	return nil
 }
 
