@@ -56,6 +56,27 @@ The API for **mrnes** input files is given in [**mrnes**-API](#https://github.co
 
 More detailed documentation of how **mrnes** operates is provided in [**pces**-Internals.pdf](#https://github.com/ITI/pces/blob/main/docs/PCES-Internals.pdf)
 
-Copyright 2024 Board of Trustees of the University of Illinois.
+
+
+#### The PCES/MRNES System
+
+The Patterned Computation Evaluation System (PCES) and Multi-resolution Network Emulator and Simulator (MRNES) are software frameworks one may use to model computations running on distributed system with the focus on estimating its performance and use of system resources.
+
+The PCES/MRNES System is written in the Go language.  We have written a number of GitHub repositories that support this system, described below.
+
+- https://github.com/iti/evt/vrtime .  Defines data structures and methods used to describe virtual time.
+- https://github.com/iti/rngstream .  Implements a random number generator.
+- https://github.com/iti/evt/evtq . Implements the priority queue used for event management.
+- https://github.com/iti/evt/evtm . Implements the event manager.
+- https://github.com/iti/evt/mrnes . Library of data structures and methods for describing a computer network.
+- https://github.com/iti/evt/pces .  Library of data structures and methods for modeling patterned computations and running discrete-event simulations of those models.
+- https://github.com/iti/evt/pcesbld . Repository of tool **xlsxPCES** used for describing PCES/MRNES models and generating input files used to run simulation experiments.
+- https://github.com/iti/evt/pcesapps . Repository of PCES/MRNES example models, and scripts to generate and run experiments on those models.
+
+
+
+
+
+Copyright 2025 Board of Trustees of the University of Illinois.
 See [the license](LICENSE) for details.
 
