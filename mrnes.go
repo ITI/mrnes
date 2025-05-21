@@ -50,8 +50,8 @@ var u01List []float64
 var numU01 int = 10000
 
 var defaultIntrfcBndwdth float64 = 100.0
-var defaultRouteOp = "route"
-var defaultSwitchOp = "switch"
+var DefaultRouteOp = "route"
+var DefaultSwitchOp = "switch"
 
 // buildDevExecTimeTbl creates a map structure that stores information about
 // operations on switches and routers.

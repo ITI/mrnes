@@ -1674,7 +1674,7 @@ func (swtch *switchDev) DevRmActive(connectID int) {
 func (swtch *switchDev) DevDelay(msg *NetworkMsg) float64 {
 	// if the switch doesn't do anything non-default just do the default switch
 	if len(swtch.SwitchState.DevExecOpTbl) == 0 {
-		return delayThruDevice(swtch.SwitchModel, defaultSwitchOp, msg.MsgLen)
+		return DelayThruDevice(swtch.SwitchModel, DefaultSwitchOp, msg.MsgLen)
 	}
 
 	// look for a match in the keys of the message metadata dictionary and
@@ -1686,7 +1686,7 @@ func (swtch *switchDev) DevDelay(msg *NetworkMsg) float64 {
 
 			// see if the function is actually the empty one, meaning its not there
 			if opFunc == nil {
-				panic(fmt.Errorf("in switch {} dev op {} lacking user-provided instantiation", swtch.SwitchName, metaKey))
+				panic(fmt.Errorf("in switch %s dev op %s lacking user-provided instantiation", swtch.SwitchName, metaKey))
 			}
 			return opFunc(swtch, metaKey, msg)
 		}
@@ -1699,12 +1699,12 @@ func (swtch *switchDev) DevDelay(msg *NetworkMsg) float64 {
 	if present {
 		opFunc := swtch.SwitchState.DevExecOpTbl[defaultOp]
 		if opFunc == nil {
-			panic(fmt.Errorf("in switch {} dev op {} lacking user-provided instantiation", swtch.SwitchName, defaultOp))
+			panic(fmt.Errorf("in switch %s dev op %s lacking user-provided instantiation", swtch.SwitchName, defaultOp))
 		}
 		return opFunc(swtch, "", msg)
 	}
 	// no user-defined default listed, so use system default
-	return delayThruDevice(swtch.SwitchModel, defaultSwitchOp, msg.MsgLen)
+	return DelayThruDevice(swtch.SwitchModel, DefaultSwitchOp, msg.MsgLen)
 }
 
 // LogNetEvent satisfies TopoDev interface
@@ -1895,7 +1895,7 @@ func (router *routerDev) DevRmActive(connectID int) {
 func (router *routerDev) DevDelay(msg *NetworkMsg) float64 {
 	// if the router doesn't do anything non-default just do the default router
 	if len(router.RouterState.DevExecOpTbl) == 0 {
-		return delayThruDevice(router.RouterModel, defaultRouteOp, msg.MsgLen)
+		return DelayThruDevice(router.RouterModel, DefaultRouteOp, msg.MsgLen)
 	}
 
 	// look for a match in the keys of the message metadata dictionary and
@@ -1905,7 +1905,7 @@ func (router *routerDev) DevDelay(msg *NetworkMsg) float64 {
 		opFunc, present := router.RouterState.DevExecOpTbl[metaKey]
 		if present {
 			if opFunc == nil {
-				panic(fmt.Errorf("in router {} dev op {} lacking user-provided instantiation", router.RouterName, metaKey))
+				panic(fmt.Errorf("in router %s dev op %s lacking user-provided instantiation", router.RouterName, metaKey))
 			}
 			return opFunc(router, metaKey, msg)
 		}
@@ -1918,12 +1918,12 @@ func (router *routerDev) DevDelay(msg *NetworkMsg) float64 {
 	if present {
 		opFunc := router.RouterState.DevExecOpTbl[defaultOp]
 		if opFunc == nil {
-			panic(fmt.Errorf("in router {} dev op {} lacking user-provided instantiation", router.RouterName, defaultOp))
+			panic(fmt.Errorf("in router %s dev op %s lacking user-provided instantiation", router.RouterName, defaultOp))
 		}
 		return opFunc(router, "", msg)
 	}
 	// no user-defined default listed, so use system default
-	return delayThruDevice(router.RouterModel, defaultRouteOp, msg.MsgLen)
+	return DelayThruDevice(router.RouterModel, DefaultRouteOp, msg.MsgLen)
 }
 
 // The intrfcsToDev struct describes a connection to a device.  Used in route descriptions
@@ -2360,7 +2360,7 @@ func FindFrameSize(frameID int, rt *[]intrfcsToDev) int {
 	return frameSize
 }
 
-func delayThruDevice(model, op string, msgLen int) float64 {
+func DelayThruDevice(model, op string, msgLen int) float64 {
 	_, present := devExecTimeTbl[op]
 	if !present {
 		panic(fmt.Errorf("dev op timing requested for unknown op %v on model %s", op, model))
