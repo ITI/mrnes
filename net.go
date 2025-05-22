@@ -1686,7 +1686,8 @@ func (swtch *switchDev) DevDelay(msg *NetworkMsg) float64 {
 
 			// see if the function is actually the empty one, meaning its not there
 			if opFunc == nil {
-				panic(fmt.Errorf("in switch %s dev op %s lacking user-provided instantiation", swtch.SwitchName, metaKey))
+				panic(fmt.Errorf("in switch %s dev op %s lacking user-provided instantiation", 
+					swtch.SwitchName, metaKey))
 			}
 			return opFunc(swtch, metaKey, msg)
 		}
@@ -1699,9 +1700,10 @@ func (swtch *switchDev) DevDelay(msg *NetworkMsg) float64 {
 	if present {
 		opFunc := swtch.SwitchState.DevExecOpTbl[defaultOp]
 		if opFunc == nil {
-			panic(fmt.Errorf("in switch %s dev op %s lacking user-provided instantiation", swtch.SwitchName, defaultOp))
+			panic(fmt.Errorf("in switch %s dev op %s lacking user-provided instantiation", 
+				swtch.SwitchName, defaultOp))
 		}
-		return opFunc(swtch, "", msg)
+		return opFunc(swtch, defaultOp, msg)
 	}
 	// no user-defined default listed, so use system default
 	return DelayThruDevice(swtch.SwitchModel, DefaultSwitchOp, msg.MsgLen)
