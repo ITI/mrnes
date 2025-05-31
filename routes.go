@@ -75,27 +75,11 @@ var cachedSP map[int]path.Shortest
 // a MrNesbits representation of a node id and a list of node ids of
 // network devices it connects to.
 func buildconnGraph(edges map[int][]int) graph.Graph {
-
-	/*
-		keys := []int{}
-		for key, _ := range edges {
-			keys = append(keys, key)
-		}
-		sort.Ints(keys)
-		for _, src := range keys {
-			peers := []string{}
-			for _, peerID := range edges[src] {
-				peers = append(peers, TopoDevByID[peerID].DevName())
-			}
-			peerList := strings.Join(peers, ",")
-			fmt.Printf("src	%s dests [%s]\n", TopoDevByID[src].DevName(), peerList)
-		}
-	*/
-
-	gNodes = make(map[int]simple.Node)
+	gNodes   = make(map[int]simple.Node)
 	cachedSP = make(map[int]path.Shortest)
 	connGraphBuilt = false
-	connGraph := simple.NewWeightedUndirectedGraph(0, math.Inf(1))
+	// connGraph := simple.NewWeightedUndirectedGraph(0, math.Inf(1))
+	connGraph := simple.NewWeightedDirectedGraph(0, math.Inf(1))
 	for nodeID := range edges {
 		_, present := gNodes[nodeID]
 		if present {
@@ -111,13 +95,17 @@ func buildconnGraph(edges map[int][]int) graph.Graph {
 		// for every neighbor in that list
 		for _, nbrID := range edgeList {
 			// represent the edge (with weight 1) in the form that the graph module represents it
-			weightedEdge := simple.WeightedEdge{F: gNodes[nodeID], T: gNodes[nbrID], W: 1.0}
-			connGraph.SetWeightedEdge(weightedEdge)
+            if directedIDToDev[nodeID] == directedIDToDev[nbrID] {  
+			    weightedEdge := simple.WeightedEdge{F: gNodes[nodeID], T: gNodes[nbrID], W: 0.0}
+			    connGraph.SetWeightedEdge(weightedEdge)
+            } else {
+			    weightedEdge := simple.WeightedEdge{F: gNodes[nodeID], T: gNodes[nbrID], W: 1.0}
+			    connGraph.SetWeightedEdge(weightedEdge)
+            }
 		}
 	}
 	// set the flag to show we've done it and so don't need to do it again
 	connGraphBuilt = true
-
 	return connGraph
 }
 
@@ -145,11 +133,18 @@ func getSPTree(from int, connGraph graph.Graph) path.Shortest {
 // (e.g. like a path) and returns that list
 func convertNodeSeq(nsQ []graph.Node) []int {
 	rtn := []int{}
+    var prevNodeID int = -1
 	for _, node := range nsQ {
 		nodeID, _ := strconv.Atoi(fmt.Sprintf("%d", node))
-		rtn = append(rtn, nodeID)
-	}
 
+        // skip when adjacent nodes are pointing to the same device
+        if prevNodeID > -1 && directedIDToDev[prevNodeID] == directedIDToDev[nodeID] {
+            prevNodeID = nodeID
+            continue
+        }
+		rtn = append(rtn, directedIDToDev[nodeID])
+        prevNodeID = nodeID
+	}
 	return rtn
 }
 
@@ -257,7 +252,7 @@ func findRoute(srcID, dstID int) *[]intrfcsToDev {
 	// routeFrom will return a sequence of device IDs, which
 	// need to expanded to carry all of the information about a routing
 	// step that is expected when traversing a route
-	route := routeFrom(srcID, topoGraph, dstID)
+	route := routeFrom(srcID, directedTopoGraph, dstID)
 
 	// struct intrfcsToDev describes a step in the route
 	routePlan := make([]intrfcsToDev, 0)

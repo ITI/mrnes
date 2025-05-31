@@ -599,6 +599,17 @@ var TopoDevByName map[string]TopoDev
 
 var topoGraph map[int][]int
 
+// indices of directedTopoGraph are ids derived from position in directedNodes slide
+var directedTopoGraph map[int][]int
+
+// index of the directed node is its identity.  The 'i' component of the intPair is its devID, j is 0 if the source, 1 if dest
+var directedNodes []intPair
+
+// index is devID, i compoment of intPair is directed id of source, j is directed id of destination
+var devIDToDirected map[int]intPair
+
+var directedIDToDev map[int]int
+
 var NumIDs int = 0
 
 // nxtID creates an id for objects created within mrnes module that are unique among those objects
@@ -647,6 +658,18 @@ func GetExperimentNetDicts(dictFiles map[string]string) (*TopoCfg, *DevExecList,
 	GetExpParamDesc()
 
 	return tc, del, xd, xdx
+}
+
+func connectDirectedIds(dtg map[int][]int, id1, id2 int) {
+    // shouldn't happen
+    if id1==id2 {
+        return
+    }
+    
+    // create edge from source version of id1 to destination version of id2
+    srcDevID := devIDToDirected[id1].i
+    dstDevID := devIDToDirected[id2].j
+    dtg[srcDevID] = append(dtg[srcDevID], dstDevID)
 }
 
 // connectIds remembers the asserted communication linkage between
@@ -700,6 +723,10 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 	IntrfcByName = make(map[string]*intrfcStruct)
 
 	topoGraph = make(map[int][]int)
+    directedTopoGraph = make(map[int][]int)
+    directedNodes = make([]intPair,0)
+    devIDToDirected = make(map[int]intPair)
+    directedIDToDev = make(map[int]int)
 
 	// fetch the router	descriptions
 	for _, rtr := range topoCfg.Routers {
@@ -929,6 +956,39 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 		net.initNetworkStruct(&netd)
 	}
 
+	for _, dev := range TopoDevByID {
+		devID := dev.DevID()
+
+        //      indices of directedTopoGraph are ids derived from position in directedNodes slide
+        // var directedTopoGraph map[int][]int
+        //      index of the directed node is its identity.  The 'i' component of the intPair is its devID, j is 0 if the source, 1 if dest
+        // var directedNodes []intPair
+        //      index is devID, i compoment of intPair is directed id of source, j is directed id of destination
+        // var devIDToDirected map[int]intPair
+
+        // create directed nodes
+        srcNode := intPair{i:devID, j:0}
+        dstNode := intPair{i:devID, j:1}
+
+        // obtain ids and remember them as mapped to by devID
+        srcNodeID := len(directedNodes)
+        directedNodes = append(directedNodes, srcNode)
+        directedTopoGraph[srcNodeID] = make([]int,0)
+
+        dstNodeID := len(directedNodes)
+        directedNodes = append(directedNodes, dstNode)
+        directedTopoGraph[dstNodeID] = make([]int,0)
+        devIDToDirected[devID] = intPair{i:srcNodeID, j:dstNodeID}
+
+        directedIDToDev[srcNodeID] = devID
+        directedIDToDev[dstNodeID] = devID
+
+        // if the device is not an endpoint create an edge from destination node to source node
+        if dev.DevType() != EndptCode {
+            directedTopoGraph[dstNodeID] = append(directedTopoGraph[dstNodeID], srcNodeID)
+        }
+    }
+
 	// put all the connections recorded in the Cabled and Wireless fields into the topoGraph
 	for _, dev := range TopoDevByID {
 		devID := dev.DevID()
@@ -937,6 +997,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 			if intrfc.Cable != nil && compatibleIntrfcs(intrfc, intrfc.Cable) {
 				peerID := intrfc.Cable.Device.DevID()
 				connectIds(topoGraph, devID, peerID, intrfc.Number, intrfc.Cable.Number)
+                connectDirectedIds(directedTopoGraph, devID, peerID)
 				connected = true
 			}
 
@@ -945,6 +1006,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 					if compatibleIntrfcs(intrfc, cintrfc) {
 						peerID := cintrfc.Device.DevID()
 						connectIds(topoGraph, devID, peerID, intrfc.Number, cintrfc.Number)
+                        connectDirectedIds(directedTopoGraph, devID, peerID)
 						connected = true
 					}
 				}
@@ -954,6 +1016,7 @@ func createTopoReferences(topoCfg *TopoCfg, tm *TraceManager) {
 				for _, conn := range intrfc.Wireless {
 					peerID := conn.Device.DevID()
 					connectIds(topoGraph, devID, peerID, intrfc.Number, conn.Number)
+                    connectDirectedIds(directedTopoGraph, devID, peerID)
 				}
 			}
 		}
