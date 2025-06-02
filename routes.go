@@ -251,8 +251,9 @@ func findRoute(srcID, dstID int) *[]intrfcsToDev {
 
 	// routeFrom will return a sequence of device IDs, which
 	// need to expanded to carry all of the information about a routing
-	// step that is expected when traversing a route
-	route := routeFrom(srcID, directedTopoGraph, dstID)
+	// step that is expected when traversing a route.  Use the directed graph
+    // representation to avoid having endpts be transit devices in routes
+	route := routeFrom(devIDToDirected[srcID].i, directedTopoGraph, devIDToDirected[dstID].j)
 
 	// struct intrfcsToDev describes a step in the route
 	routePlan := make([]intrfcsToDev, 0)
