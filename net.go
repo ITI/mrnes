@@ -2445,7 +2445,7 @@ func devOpTimeFromTbl(tbl []opTimeDesc, op, model string, msgLen int) float64 {
 	//   case: pls[0] <= pcktLen < pls[len(pls)-1] --- do a linear interpolation
 	//   case: pls[len(pls)-1] < pcktLen and len(pls) > 1 --- use slope between last two points
 	if len(pls) == 1 {
-		value := float64(msgLen) * tbl[pls[0]].execTime / float64(tbl[pls[0]].pcktLen)
+		value := float64(msgLen) * tbl[0].execTime / float64(tbl[0].pcktLen)
 		devExecTimeCache[op][model][msgLen] = value
 		return value
 	}
